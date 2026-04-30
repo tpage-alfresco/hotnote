@@ -68,11 +68,10 @@ def fmt_note(note: dict, show_links: bool = False) -> str:
         line += f"  (done {note['completed'][:10]})"
     if show_links and note.get("links"):
         for lnk in note["links"]:
-            title = lnk.get("title", "")
             if lnk["type"] == "ref":
-                line += f"\n         ref: {lnk.get('text', '')}  {title}"
+                line += f"\n         ref: {lnk.get('text', '')}"
             else:
-                line += f"\n         {lnk.get('url', '')}  {title}"
+                line += f"\n         {lnk.get('url', '')}  {lnk.get('title', '')}"
     return line
 
 
@@ -181,7 +180,7 @@ def cmd_link(args) -> None:
     if is_url:
         link = {"type": "url", "url": raw, "title": title or raw}
     else:
-        link = {"type": "ref", "text": raw, "title": title}
+        link = {"type": "ref", "text": raw}
 
     note.setdefault("links", []).append(link)
     save(data)

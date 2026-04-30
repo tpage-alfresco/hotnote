@@ -204,11 +204,9 @@ Gtk.StyleContext.add_provider_for_screen(
 def _link_icon_and_label(lnk: dict) -> tuple[str, str]:
     """Return (icon_emoji, display_title) for a link."""
     if lnk["type"] == "ref":
-        raw_title = lnk.get("title") or lnk.get("text", "ref")
-        return "📋", raw_title
+        return "📋", lnk.get("text", "ref")
     elif lnk["type"] == "url":
-        raw_title = lnk.get("title") or lnk.get("url", "")[:30]
-        return "🌐", raw_title
+        return "🌐", lnk.get("title") or lnk.get("url", "")[:30]
     else:
         return "🔗", lnk.get("title", "link")
 
@@ -498,7 +496,7 @@ class HotNoteWindow(Gtk.Window):
         content.pack_start(value_entry, False, False, 0)
 
         title_entry = Gtk.Entry()
-        title_entry.set_placeholder_text("Display title (optional)")
+        title_entry.set_placeholder_text("Display title (for URLs only, optional)")
         title_entry.set_activates_default(True)
         content.pack_start(title_entry, False, False, 0)
 
@@ -520,7 +518,7 @@ class HotNoteWindow(Gtk.Window):
                             })
                         else:
                             t.setdefault("links", []).append({
-                                "type": "ref", "text": value, "title": title,
+                                "type": "ref", "text": value,
                             })
                         break
                 save_hotnotes(notes)
