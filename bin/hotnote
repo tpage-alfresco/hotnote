@@ -1,0 +1,267 @@
+#!/usr/bin/env python3
+"""HotNote CLI — read/write ~/.local/share/hotnote/hotnotes.json"""
+
+import argparse
+import json
+import os
+import random
+import subprocess
+import sys
+from datetime import datetime, timezone
+
+HOTNOTES_PATH = os.path.expanduser("~/.local/share/hotnote/hotnotes.json")
+
+IMPORTANCE_VALUES = ["critical", "high", "medium", "low"]
+URGENCY_VALUES = ["immediate", "soon", "whenever"]
+
+IMPORTANCE_ORDER = {v: i for i, v in enumerate(IMPORTANCE_VALUES)}
+URGENCY_ORDER = {v: i for i, v in enumerate(URGENCY_VALUES)}
+
+
+def load() -> dict:
+    if not os.path.exists(HOTNOTES_PATH):
+        return {"hotnotes": []}
+    with open(HOTNOTES_PATH) as f:
+        return json.load(f)
+
+
+def save(data: dict) -> None:
+    os.makedirs(os.path.dirname(HOTNOTES_PATH), exist_ok=True)
+    with open(HOTNOTES_PATH, "w") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+
+
+def new_id(data: dict) -> str:
+    existing = {t["id"] for t in data["hotnotes"]}
+    while True:
+        uid = f"{random.randint(0, 0xFFFFFF):06x}"
+        if uid not in existing:
+            return uid
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def find_note(data: dict, note_id: str) -> dict | None:
+    for t in data["hotnotes"]:
+        if t["id"] == note_id:
+            return t
+    return None
+
+
+def sort_key(note: dict) -> tuple:
+    return (
+        IMPORTANCE_ORDER.get(note.get("importance", "medium"), 99),
+        URGENCY_ORDER.get(note.get("urgency", "soon"), 99),
+    )
+
+
+def fmt_note(note: dict, show_links: bool = False) -> str:
+    imp = note.get("importance", "medium")
+    urg = note.get("urgency", "soon")
+    status = note.get("status", "pending")
+    done_marker = "✓" if status == "done" else " "
+    line = f"[{done_marker}] {note['id']}  {imp:<8} {urg:<9}  {note['summary']}"
+    if note.get("completed"):
+        line += f"  (done {note['completed'][:10]})"
+    if show_links and note.get("links"):
+        for lnk in note["links"]:
+            title = lnk.get("title", "")
+            if lnk["type"] == "ref":
+                line += f"\n         ref: {lnk.get('text', '')}  {title}"
+            else:
+                line += f"\n         {lnk.get('url', '')}  {title}"
+    return line
+
+
+# ── Commands ──────────────────────────────────────────────────────────────────
+
+def cmd_add(args) -> None:
+    if args.importance not in IMPORTANCE_VALUES:
+        sys.exit(f"Invalid importance '{args.importance}'. Choose: {', '.join(IMPORTANCE_VALUES)}")
+    if args.urgency not in URGENCY_VALUES:
+        sys.exit(f"Invalid urgency '{args.urgency}'. Choose: {', '.join(URGENCY_VALUES)}")
+    data = load()
+    uid = new_id(data)
+    note = {
+        "id": uid,
+        "summary": args.summary,
+        "status": "pending",
+        "importance": args.importance,
+        "urgency": args.urgency,
+        "created": now_iso(),
+        "completed": None,
+        "links": [],
+    }
+    data["hotnotes"].append(note)
+    save(data)
+    print(uid)
+
+
+def cmd_list(args) -> None:
+    data = load()
+    notes = data["hotnotes"]
+    if not args.all:
+        notes = [t for t in notes if t.get("status") != "done"]
+    notes = sorted(notes, key=sort_key)
+    if not notes:
+        print("No hotnotes." if args.all else "No pending hotnotes.")
+        return
+    header = f"{'':3} {'ID':<6}  {'IMPORTANCE':<8} {'URGENCY':<9}  SUMMARY"
+    print(header)
+    print("-" * 72)
+    for t in notes:
+        print(fmt_note(t, show_links=args.links))
+
+
+def cmd_done(args) -> None:
+    data = load()
+    note = find_note(data, args.id)
+    if not note:
+        sys.exit(f"No hotnote with id '{args.id}'")
+    note["status"] = "done"
+    note["completed"] = now_iso()
+    save(data)
+    print(f"Marked done: {note['summary']}")
+
+
+def cmd_reopen(args) -> None:
+    data = load()
+    note = find_note(data, args.id)
+    if not note:
+        sys.exit(f"No hotnote with id '{args.id}'")
+    note["status"] = "pending"
+    note["completed"] = None
+    save(data)
+    print(f"Reopened: {note['summary']}")
+
+
+def cmd_delete(args) -> None:
+    data = load()
+    before = len(data["hotnotes"])
+    data["hotnotes"] = [t for t in data["hotnotes"] if t["id"] != args.id]
+    if len(data["hotnotes"]) == before:
+        sys.exit(f"No hotnote with id '{args.id}'")
+    save(data)
+    print(f"Deleted {args.id}")
+
+
+def cmd_set(args) -> None:
+    data = load()
+    note = find_note(data, args.id)
+    if not note:
+        sys.exit(f"No hotnote with id '{args.id}'")
+    if args.importance:
+        if args.importance not in IMPORTANCE_VALUES:
+            sys.exit(f"Invalid importance. Choose: {', '.join(IMPORTANCE_VALUES)}")
+        note["importance"] = args.importance
+    if args.urgency:
+        if args.urgency not in URGENCY_VALUES:
+            sys.exit(f"Invalid urgency. Choose: {', '.join(URGENCY_VALUES)}")
+        note["urgency"] = args.urgency
+    if args.summary:
+        note["summary"] = args.summary
+    save(data)
+    print(f"Updated {args.id}")
+
+
+def cmd_link(args) -> None:
+    data = load()
+    note = find_note(data, args.id)
+    if not note:
+        sys.exit(f"No hotnote with id '{args.id}'")
+
+    raw = args.ref
+    title = args.title or ""
+
+    is_url = raw.startswith("http://") or raw.startswith("https://")
+
+    if is_url:
+        link = {"type": "url", "url": raw, "title": title or raw}
+    else:
+        link = {"type": "ref", "text": raw, "title": title}
+
+    note.setdefault("links", []).append(link)
+    save(data)
+    kind = "URL" if is_url else "reference"
+    print(f"Linked {kind} to {args.id}")
+
+
+def cmd_show(args) -> None:
+    data = load()
+    note = find_note(data, args.id)
+    if not note:
+        sys.exit(f"No hotnote with id '{args.id}'")
+    print(json.dumps(note, indent=2))
+
+
+def cmd_open(_args) -> None:
+    indicator_bin = os.path.expanduser("~/.local/bin/hotnote-indicator")
+    subprocess.Popen(
+        [indicator_bin, "--open-window"],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+# ── Argument parser ───────────────────────────────────────────────────────────
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        prog="hotnote",
+        description="HotNote — manage your hotnotes",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_add = sub.add_parser("add", help="Add a new hotnote")
+    p_add.add_argument("summary")
+    p_add.add_argument("--importance", default="medium", choices=IMPORTANCE_VALUES)
+    p_add.add_argument("--urgency", default="soon", choices=URGENCY_VALUES)
+    p_add.set_defaults(func=cmd_add)
+
+    p_list = sub.add_parser("list", help="List hotnotes")
+    p_list.add_argument("--all", action="store_true", help="Include completed")
+    p_list.add_argument("--links", action="store_true", help="Show linked references")
+    p_list.set_defaults(func=cmd_list)
+
+    p_done = sub.add_parser("done", help="Mark a hotnote as completed")
+    p_done.add_argument("id")
+    p_done.set_defaults(func=cmd_done)
+
+    p_reopen = sub.add_parser("reopen", help="Reopen a completed hotnote")
+    p_reopen.add_argument("id")
+    p_reopen.set_defaults(func=cmd_reopen)
+
+    p_del = sub.add_parser("delete", help="Delete a hotnote")
+    p_del.add_argument("id")
+    p_del.set_defaults(func=cmd_delete)
+
+    p_set = sub.add_parser("set", help="Update a hotnote's fields")
+    p_set.add_argument("id")
+    p_set.add_argument("--importance", choices=IMPORTANCE_VALUES)
+    p_set.add_argument("--urgency", choices=URGENCY_VALUES)
+    p_set.add_argument("--summary")
+    p_set.set_defaults(func=cmd_set)
+
+    p_link = sub.add_parser("link", help="Attach a link or text reference to a hotnote")
+    p_link.add_argument("id")
+    p_link.add_argument("ref", help="URL (https://...) or text reference")
+    p_link.add_argument("title", nargs="?", default="", help="Optional display title")
+    p_link.set_defaults(func=cmd_link)
+
+    p_show = sub.add_parser("show", help="Show full detail for a hotnote")
+    p_show.add_argument("id")
+    p_show.set_defaults(func=cmd_show)
+
+    p_open = sub.add_parser("open", help="Open the HotNote window")
+    p_open.set_defaults(func=cmd_open)
+
+    args = parser.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

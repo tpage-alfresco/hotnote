@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=HotNote
+Comment=Personal task tracker with system tray indicator
+Exec=@PREFIX@/bin/hotnote-indicator --open-window
+Icon=hotnote
+Terminal=false
+Categories=Utility;
+StartupNotify=true
+StartupWMClass=hotnote
+Keywords=hotnote;todo;task;list;notes;

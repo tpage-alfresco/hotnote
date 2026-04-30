@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=HotNote Indicator
+Comment=System tray indicator for HotNote
+Exec=@PREFIX@/bin/hotnote-indicator
+Icon=hotnote
+Terminal=false
+X-GNOME-Autostart-enabled=true
+StartupNotify=false
