@@ -5,9 +5,10 @@ import argparse
 import json
 import os
 import random
+import re
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import gi
 
@@ -77,14 +78,13 @@ def save_config(cfg: dict) -> None:
 
 
 def _is_useless_title(title: str) -> bool:
-    import re as _re
     cfg = load_config()
     lower = title.lower()
     for pattern in cfg.get("useless_title_patterns", []):
         try:
-            if _re.fullmatch(pattern, lower):
+            if re.fullmatch(pattern, lower):
                 return True
-        except _re.error:
+        except re.error:
             continue
     return False
 
@@ -97,7 +97,6 @@ def _domain(url: str) -> str:
 
 def _fetch_page_title(url: str) -> str:
     """Fetch the <title> of a URL. Falls back to the domain name."""
-    import re
     from urllib.request import Request, urlopen
     try:
         req = Request(url, headers={"User-Agent": "Mozilla/5.0 (HotNote)"})
@@ -143,6 +142,60 @@ def sort_key(note: dict) -> tuple:
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+_RECUR_RE = re.compile(r"^(\d+)\s*([dwm])$", re.IGNORECASE)
+_UNIT_MAP = {"d": "days", "w": "weeks", "m": "months"}
+
+
+def parse_recur(spec: str) -> dict | None:
+    if spec.lower() == "none":
+        return None
+    m = _RECUR_RE.match(spec.strip())
+    if not m:
+        return None
+    return {"every": int(m.group(1)), "unit": _UNIT_MAP[m.group(2).lower()]}
+
+
+def advance_next_due(prev_due: str, recur: dict) -> str:
+    from dateutil.relativedelta import relativedelta
+    dt = datetime.fromisoformat(prev_due.replace("Z", "+00:00"))
+    unit = recur["unit"]
+    every = recur["every"]
+    if unit == "days":
+        dt += timedelta(days=every)
+    elif unit == "weeks":
+        dt += timedelta(weeks=every)
+    elif unit == "months":
+        dt += relativedelta(months=every)
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def recur_resurrect(notes: list) -> bool:
+    """Flip done recurring notes back to pending if next_due has passed."""
+    now = datetime.now(timezone.utc)
+    changed = False
+    for note in notes:
+        if note.get("status") != "done":
+            continue
+        if not note.get("recur") or not note.get("next_due"):
+            continue
+        due = datetime.fromisoformat(note["next_due"].replace("Z", "+00:00"))
+        if due <= now:
+            note["status"] = "pending"
+            note["completed"] = None
+            changed = True
+    return changed
+
+
+def fmt_recur_short(note: dict) -> str:
+    recur = note.get("recur")
+    if not recur:
+        return ""
+    every = recur["every"]
+    unit = recur["unit"]
+    short = {"days": "d", "weeks": "w", "months": "mo"}[unit]
+    return f"↻{every}{short}"
 
 
 def pending(notes: list) -> list:
@@ -417,6 +470,13 @@ class DetailDialog(Gtk.Dialog):
         meta_grid.attach(Gtk.Label(label="Created:", xalign=0), 0, 2, 1, 1)
         meta_grid.attach(Gtk.Label(label=note.get("created", "—")[:10], xalign=0), 1, 2, 1, 1)
 
+        recur = note.get("recur")
+        if recur:
+            recur_text = fmt_recur_short(note)
+            next_due = note.get("next_due", "")[:10]
+            meta_grid.attach(Gtk.Label(label="Recurrence:", xalign=0), 0, 3, 1, 1)
+            meta_grid.attach(Gtk.Label(label=f"{recur_text}  (next: {next_due})", xalign=0), 1, 3, 1, 1)
+
         # Details/notes field
         details_text = note.get("details", "")
         if details_text:
@@ -525,6 +585,33 @@ class DetailDialog(Gtk.Dialog):
         self._edit_urg.set_active(URGENCY_VALUES.index(cur_urg) if cur_urg in URGENCY_VALUES else 1)
         level_box.pack_start(self._edit_urg, False, False, 0)
 
+        recur_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        body.pack_start(recur_box, False, False, 0)
+
+        recur_box.pack_start(Gtk.Label(label="Recur every:"), False, False, 0)
+        self._edit_recur = Gtk.Entry()
+        self._edit_recur.set_width_chars(8)
+        self._edit_recur.set_placeholder_text("e.g. 7d")
+        self._edit_recur.set_tooltip_text("18d, 2w, 1m — or leave empty for no recurrence")
+        cur_recur = note.get("recur")
+        if cur_recur:
+            short = {"days": "d", "weeks": "w", "months": "m"}[cur_recur["unit"]]
+            self._edit_recur.set_text(f"{cur_recur['every']}{short}")
+        recur_box.pack_start(self._edit_recur, False, False, 0)
+
+        recur_box.pack_start(Gtk.Label(label="First due:"), False, False, 0)
+        self._edit_first_due = Gtk.Entry()
+        self._edit_first_due.set_width_chars(12)
+        self._edit_first_due.set_placeholder_text("YYYY-MM-DD")
+        self._edit_first_due.set_text(note.get("first_due", ""))
+        recur_box.pack_start(self._edit_first_due, False, False, 0)
+
+        edit_cal_btn = Gtk.Button(label="📅")
+        edit_cal_btn.set_relief(Gtk.ReliefStyle.NONE)
+        edit_cal_btn.set_tooltip_text("Pick a date")
+        edit_cal_btn.connect("clicked", self._on_pick_first_due_cal)
+        recur_box.pack_start(edit_cal_btn, False, False, 0)
+
         # Links section with CRUD
         link_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         body.pack_start(link_header, False, False, 0)
@@ -596,6 +683,28 @@ class DetailDialog(Gtk.Dialog):
             self._links_box.pack_start(Gtk.Label(label="No links.", xalign=0), False, False, 0)
 
         self._links_box.show_all()
+
+    def _on_pick_first_due_cal(self, _widget) -> None:
+        popover = Gtk.Popover()
+        popover.set_relative_to(_widget)
+        cal = Gtk.Calendar()
+        current = self._edit_first_due.get_text().strip()
+        if current:
+            try:
+                dt = datetime.strptime(current, "%Y-%m-%d")
+                cal.select_month(dt.month - 1, dt.year)
+                cal.select_day(dt.day)
+            except ValueError:
+                pass
+
+        def on_day_selected(_cal):
+            year, month, day = cal.get_date()
+            self._edit_first_due.set_text(f"{year:04d}-{month + 1:02d}-{day:02d}")
+            popover.popdown()
+
+        cal.connect("day-selected-double-click", on_day_selected)
+        popover.add(cal)
+        popover.show_all()
 
     def _on_edit_add_link(self, _widget) -> None:
         result = self._link_entry_dialog("Add Link / Reference", "", "")
@@ -693,6 +802,26 @@ class DetailDialog(Gtk.Dialog):
 
         note["importance"] = IMPORTANCE_VALUES[self._edit_imp.get_active()]
         note["urgency"] = URGENCY_VALUES[self._edit_urg.get_active()]
+
+        recur_spec = self._edit_recur.get_text().strip()
+        if recur_spec:
+            recur = parse_recur(recur_spec)
+            if recur:
+                note["recur"] = recur
+                first = self._edit_first_due.get_text().strip()
+                if first:
+                    note["first_due"] = first
+                    if not note.get("next_due"):
+                        note["next_due"] = f"{first}T00:00:00Z"
+                elif not note.get("next_due"):
+                    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                    note["first_due"] = today
+                    note["next_due"] = f"{today}T00:00:00Z"
+        else:
+            note.pop("recur", None)
+            note.pop("next_due", None)
+            note.pop("first_due", None)
+
         note["links"] = self._edit_links
 
         self._save_note(note)
@@ -766,10 +895,45 @@ class HotNoteWindow(Gtk.Window):
         self.urg_combo.set_active(1)
         add_bar.pack_start(self.urg_combo, False, False, 0)
 
+        self.recur_toggle = Gtk.ToggleButton(label="↻")
+        self.recur_toggle.set_tooltip_text("Set up recurrence")
+        self.recur_toggle.set_relief(Gtk.ReliefStyle.NONE)
+        self.recur_toggle.connect("toggled", self._on_recur_toggled)
+        add_bar.pack_start(self.recur_toggle, False, False, 0)
+
         add_btn = Gtk.Button(label="🔥 Add")
         add_btn.get_style_context().add_class("hotnote-add-btn")
         add_btn.connect("clicked", self._on_add)
         add_bar.pack_start(add_btn, False, False, 0)
+
+        # ── Recurrence row (hidden by default) ────────────────────────────────
+        self.recur_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.recur_row.set_border_width(4)
+        self.recur_row.set_margin_start(10)
+        self.recur_row.set_margin_end(10)
+        vbox.pack_start(self.recur_row, False, False, 0)
+
+        self.recur_row.pack_start(Gtk.Label(label="Every:"), False, False, 0)
+        self.recur_entry = Gtk.Entry()
+        self.recur_entry.set_placeholder_text("e.g. 18d, 2w, 1m")
+        self.recur_entry.set_width_chars(10)
+        self.recur_row.pack_start(self.recur_entry, False, False, 0)
+
+        self.recur_row.pack_start(Gtk.Label(label="First due:"), False, False, 4)
+        self.first_due_entry = Gtk.Entry()
+        self.first_due_entry.set_placeholder_text("YYYY-MM-DD")
+        self.first_due_entry.set_width_chars(12)
+        self.first_due_entry.set_text(datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+        self.recur_row.pack_start(self.first_due_entry, False, False, 0)
+
+        cal_btn = Gtk.Button(label="📅")
+        cal_btn.set_relief(Gtk.ReliefStyle.NONE)
+        cal_btn.set_tooltip_text("Pick a date")
+        cal_btn.connect("clicked", self._on_pick_date, self.first_due_entry)
+        self.recur_row.pack_start(cal_btn, False, False, 0)
+
+        self.recur_row.set_no_show_all(True)
+        self.recur_row.hide()
 
         sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
         vbox.pack_start(sep, False, False, 0)
@@ -836,6 +1000,13 @@ class HotNoteWindow(Gtk.Window):
         urg_lbl = colored_label(urg, URGENCY_COLORS.get(urg, "#000"))
         urg_lbl.set_size_request(80, -1)
         top.pack_start(urg_lbl, False, False, 0)
+
+        recur_text = fmt_recur_short(note)
+        if recur_text:
+            recur_lbl = Gtk.Label()
+            recur_lbl.set_markup(f'<span foreground="#64b5f6" weight="bold">{recur_text}</span>')
+            recur_lbl.set_tooltip_text(f"Next due: {note.get('next_due', '?')[:10]}")
+            top.pack_start(recur_lbl, False, False, 0)
 
         done_btn = Gtk.Button(label="🔥 Done")
         done_btn.get_style_context().add_class("done-btn")
@@ -918,6 +1089,39 @@ class HotNoteWindow(Gtk.Window):
         return row
 
     # ── Actions ───────────────────────────────────────────────────────────────
+
+    def _on_pick_date(self, _widget, entry: Gtk.Entry) -> None:
+        popover = Gtk.Popover()
+        popover.set_relative_to(_widget)
+        cal = Gtk.Calendar()
+        current = entry.get_text().strip()
+        if current:
+            try:
+                dt = datetime.strptime(current, "%Y-%m-%d")
+                cal.select_month(dt.month - 1, dt.year)
+                cal.select_day(dt.day)
+            except ValueError:
+                pass
+
+        def on_day_selected(_cal):
+            year, month, day = cal.get_date()
+            entry.set_text(f"{year:04d}-{month + 1:02d}-{day:02d}")
+            popover.popdown()
+
+        cal.connect("day-selected-double-click", on_day_selected)
+        popover.add(cal)
+        popover.show_all()
+
+    def _on_recur_toggled(self, _widget) -> None:
+        if self.recur_toggle.get_active():
+            self.recur_row.set_no_show_all(False)
+            self.recur_row.show_all()
+            self.first_due_entry.set_text(datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+        else:
+            self.recur_row.set_no_show_all(True)
+            self.recur_row.hide()
+            self.recur_entry.set_text("")
+            self.first_due_entry.set_text("")
 
     def _on_settings(self, _widget) -> None:
         dlg = Gtk.Dialog(
@@ -1004,10 +1208,9 @@ class HotNoteWindow(Gtk.Window):
             text = add_entry.get_text().strip()
             if not text:
                 return
-            import re as _re
             try:
-                _re.compile(text)
-            except _re.error as e:
+                re.compile(text)
+            except re.error as e:
                 err_dlg = Gtk.MessageDialog(
                     transient_for=dlg, modal=True,
                     message_type=Gtk.MessageType.ERROR,
@@ -1050,7 +1253,7 @@ class HotNoteWindow(Gtk.Window):
             uid = f"{random.randint(0, 0xFFFFFF):06x}"
             if uid not in existing_ids:
                 break
-        notes.append({
+        note = {
             "id": uid,
             "summary": text,
             "details": "",
@@ -1060,9 +1263,21 @@ class HotNoteWindow(Gtk.Window):
             "created": now_iso(),
             "completed": None,
             "links": [],
-        })
+        }
+        if self.recur_toggle.get_active():
+            recur_spec = self.recur_entry.get_text().strip()
+            recur = parse_recur(recur_spec) if recur_spec else None
+            if recur:
+                note["recur"] = recur
+                first = self.first_due_entry.get_text().strip()
+                if not first:
+                    first = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                note["first_due"] = first
+                note["next_due"] = f"{first}T00:00:00Z"
+        notes.append(note)
         save_hotnotes(notes)
         self.entry.set_text("")
+        self.recur_toggle.set_active(False)
         self.refresh()
 
     def _on_done(self, _widget, note_id: str) -> None:
@@ -1071,6 +1286,8 @@ class HotNoteWindow(Gtk.Window):
             if t["id"] == note_id:
                 t["status"] = "done"
                 t["completed"] = now_iso()
+                if t.get("recur") and t.get("next_due"):
+                    t["next_due"] = advance_next_due(t["next_due"], t["recur"])
         save_hotnotes(notes)
         self.refresh()
 
@@ -1202,6 +1419,12 @@ class HotNoteIndicator:
             mtime = os.path.getmtime(HOTNOTES_PATH)
         except OSError:
             return True
+
+        notes = load_hotnotes()
+        if recur_resurrect(notes):
+            save_hotnotes(notes)
+            mtime = os.path.getmtime(HOTNOTES_PATH)
+
         if mtime != self._last_mtime:
             self._last_mtime = mtime
             self._rebuild_menu()
@@ -1231,7 +1454,8 @@ class HotNoteIndicator:
                 summary = summary.ljust(MENU_MAX_CHARS)
                 imp_icon = IMPORTANCE_ICON.get(imp, "")
                 urg_icon = URGENCY_ICON.get(urg, "")
-                label = f"{summary} {imp_icon}{urg_icon}"
+                recur_icon = "↻" if note.get("recur") else ""
+                label = f"{summary} {imp_icon}{urg_icon}{recur_icon}"
                 item = Gtk.MenuItem(label=label)
                 first_link = next(
                     (l for l in note.get("links", []) if l["type"] in ("ref", "url")),

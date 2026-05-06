@@ -5,9 +5,10 @@ import argparse
 import json
 import os
 import random
+import re
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 HOTNOTES_PATH = os.path.expanduser("~/.local/share/hotnote/hotnotes.json")
 CONFIG_PATH = os.path.expanduser("~/.config/hotnote/config.json")
@@ -35,7 +36,6 @@ def save_config(cfg: dict) -> None:
 
 
 def _is_useless_title(title: str) -> bool:
-    import re
     cfg = load_config()
     lower = title.lower()
     for pattern in cfg.get("useless_title_patterns", []):
@@ -55,7 +55,6 @@ def _domain(url: str) -> str:
 
 def _fetch_page_title(url: str) -> str:
     """Fetch the <title> of a URL. Falls back to the domain name."""
-    import re
     from urllib.request import Request, urlopen
     try:
         req = Request(url, headers={"User-Agent": "Mozilla/5.0 (HotNote)"})
@@ -118,12 +117,71 @@ def sort_key(note: dict) -> tuple:
     return (imp + urg, urg)
 
 
+# ── Recurrence helpers ────────────────────────────────────────────────────────
+
+_RECUR_RE = re.compile(r"^(\d+)\s*([dwm])$", re.IGNORECASE)
+_UNIT_MAP = {"d": "days", "w": "weeks", "m": "months"}
+
+
+def parse_recur(spec: str) -> dict | None:
+    """Parse '18d', '2w', '1m' into {"every": 18, "unit": "days"}. Returns None on 'none'."""
+    if spec.lower() == "none":
+        return None
+    m = _RECUR_RE.match(spec.strip())
+    if not m:
+        sys.exit(f"Invalid recurrence '{spec}'. Use e.g. 18d, 2w, 1m, or 'none'.")
+    return {"every": int(m.group(1)), "unit": _UNIT_MAP[m.group(2).lower()]}
+
+
+def advance_next_due(prev_due: str, recur: dict) -> str:
+    """Advance a next_due ISO string by one recurrence interval."""
+    from dateutil.relativedelta import relativedelta
+    dt = datetime.fromisoformat(prev_due.replace("Z", "+00:00"))
+    unit = recur["unit"]
+    every = recur["every"]
+    if unit == "days":
+        dt += timedelta(days=every)
+    elif unit == "weeks":
+        dt += timedelta(weeks=every)
+    elif unit == "months":
+        dt += relativedelta(months=every)
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def recur_resurrect(data: dict) -> bool:
+    """Flip done recurring notes back to pending if next_due has passed. Returns True if any changed."""
+    now = datetime.now(timezone.utc)
+    changed = False
+    for note in data["hotnotes"]:
+        if note.get("status") != "done":
+            continue
+        if not note.get("recur") or not note.get("next_due"):
+            continue
+        due = datetime.fromisoformat(note["next_due"].replace("Z", "+00:00"))
+        if due <= now:
+            note["status"] = "pending"
+            note["completed"] = None
+            changed = True
+    return changed
+
+
+def fmt_recur(note: dict) -> str:
+    """Format recurrence info for display."""
+    recur = note.get("recur")
+    if not recur:
+        return ""
+    every = recur["every"]
+    unit = recur["unit"]
+    short = {"days": "d", "weeks": "w", "months": "mo"}[unit]
+    return f" ↻{every}{short}"
+
+
 def fmt_note(note: dict, show_links: bool = False) -> str:
     imp = note.get("importance", "medium")
     urg = note.get("urgency", "soon")
     status = note.get("status", "pending")
     done_marker = "✓" if status == "done" else " "
-    line = f"[{done_marker}] {note['id']}  {imp:<8} {urg:<9}  {note['summary']}"
+    line = f"[{done_marker}] {note['id']}  {imp:<8} {urg:<9}  {note['summary']}{fmt_recur(note)}"
     if note.get("completed"):
         line += f"  (done {note['completed'][:10]})"
     if show_links and note.get("links"):
@@ -155,6 +213,13 @@ def cmd_add(args) -> None:
         "completed": None,
         "links": [],
     }
+    if args.recur:
+        recur = parse_recur(args.recur)
+        if recur:
+            note["recur"] = recur
+            first = args.first_due or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            note["first_due"] = first
+            note["next_due"] = f"{first}T00:00:00Z"
     data["hotnotes"].append(note)
     save(data)
     print(uid)
@@ -162,6 +227,8 @@ def cmd_add(args) -> None:
 
 def cmd_list(args) -> None:
     data = load()
+    if recur_resurrect(data):
+        save(data)
     notes = data["hotnotes"]
     if not args.all:
         notes = [t for t in notes if t.get("status") != "done"]
@@ -183,8 +250,12 @@ def cmd_done(args) -> None:
         sys.exit(f"No hotnote with id '{args.id}'")
     note["status"] = "done"
     note["completed"] = now_iso()
+    if note.get("recur") and note.get("next_due"):
+        note["next_due"] = advance_next_due(note["next_due"], note["recur"])
+        print(f"Marked done: {note['summary']} (next due {note['next_due'][:10]})")
+    else:
+        print(f"Marked done: {note['summary']}")
     save(data)
-    print(f"Marked done: {note['summary']}")
 
 
 def cmd_reopen(args) -> None:
@@ -225,6 +296,21 @@ def cmd_set(args) -> None:
         note["summary"] = args.summary
     if args.details is not None:
         note["details"] = args.details
+    if args.recur:
+        recur = parse_recur(args.recur)
+        if recur:
+            note["recur"] = recur
+            if args.first_due:
+                note["first_due"] = args.first_due
+                note["next_due"] = f"{args.first_due}T00:00:00Z"
+            elif not note.get("next_due"):
+                first = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                note["first_due"] = first
+                note["next_due"] = f"{first}T00:00:00Z"
+        else:
+            note.pop("recur", None)
+            note.pop("next_due", None)
+            note.pop("first_due", None)
     save(data)
     print(f"Updated {args.id}")
 
@@ -284,6 +370,8 @@ def main() -> None:
     p_add.add_argument("summary")
     p_add.add_argument("--importance", default="medium", choices=IMPORTANCE_VALUES)
     p_add.add_argument("--urgency", default="soon", choices=URGENCY_VALUES)
+    p_add.add_argument("--recur", help="Recurrence interval: e.g. 18d, 2w, 1m")
+    p_add.add_argument("--first-due", help="First due date (YYYY-MM-DD, defaults to today)")
     p_add.set_defaults(func=cmd_add)
 
     p_list = sub.add_parser("list", help="List hotnotes")
@@ -309,6 +397,8 @@ def main() -> None:
     p_set.add_argument("--urgency", choices=URGENCY_VALUES)
     p_set.add_argument("--summary")
     p_set.add_argument("--details", help="Set the details/notes text")
+    p_set.add_argument("--recur", help="Recurrence: e.g. 18d, 2w, 1m, or 'none' to remove")
+    p_set.add_argument("--first-due", help="First due date (YYYY-MM-DD)")
     p_set.set_defaults(func=cmd_set)
 
     p_link = sub.add_parser("link", help="Attach a link or text reference to a hotnote")
