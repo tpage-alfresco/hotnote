@@ -10,12 +10,73 @@ import sys
 from datetime import datetime, timezone
 
 HOTNOTES_PATH = os.path.expanduser("~/.local/share/hotnote/hotnotes.json")
+CONFIG_PATH = os.path.expanduser("~/.config/hotnote/config.json")
+
+DEFAULT_USELESS_PATTERNS = [r".*log in.*", r".*sign in.*"]
+
+
+def load_config() -> dict:
+    if not os.path.exists(CONFIG_PATH):
+        return {"useless_title_patterns": list(DEFAULT_USELESS_PATTERNS)}
+    try:
+        with open(CONFIG_PATH) as f:
+            cfg = json.load(f)
+        cfg.setdefault("useless_title_patterns", list(DEFAULT_USELESS_PATTERNS))
+        return cfg
+    except (json.JSONDecodeError, OSError):
+        return {"useless_title_patterns": list(DEFAULT_USELESS_PATTERNS)}
+
+
+def save_config(cfg: dict) -> None:
+    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+    with open(CONFIG_PATH, "w") as f:
+        json.dump(cfg, f, indent=2)
+        f.write("\n")
+
+
+def _is_useless_title(title: str) -> bool:
+    import re
+    cfg = load_config()
+    lower = title.lower()
+    for pattern in cfg.get("useless_title_patterns", []):
+        try:
+            if re.fullmatch(pattern, lower):
+                return True
+        except re.error:
+            continue
+    return False
+
+
+def _domain(url: str) -> str:
+    from urllib.parse import urlparse
+    host = urlparse(url).hostname or url
+    return host.removeprefix("www.")
+
+
+def _fetch_page_title(url: str) -> str:
+    """Fetch the <title> of a URL. Falls back to the domain name."""
+    import re
+    from urllib.request import Request, urlopen
+    try:
+        req = Request(url, headers={"User-Agent": "Mozilla/5.0 (HotNote)"})
+        with urlopen(req, timeout=5) as resp:
+            chunk = resp.read(65536).decode("utf-8", errors="ignore")
+        match = re.search(r"<title[^>]*>(.*?)</title>", chunk, re.IGNORECASE | re.DOTALL)
+        if match:
+            import html
+            title = html.unescape(match.group(1)).strip()
+            if not _is_useless_title(title):
+                return title
+    except Exception:
+        pass
+    return _domain(url)
+
 
 IMPORTANCE_VALUES = ["critical", "high", "medium", "low"]
 URGENCY_VALUES = ["immediate", "soon", "whenever"]
 
-IMPORTANCE_ORDER = {v: i for i, v in enumerate(IMPORTANCE_VALUES)}
-URGENCY_ORDER = {v: i for i, v in enumerate(URGENCY_VALUES)}
+IMPORTANCE_WEIGHT = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+URGENCY_WEIGHT = {"immediate": 0, "soon": 1, "whenever": 2}
 
 
 def load() -> dict:
@@ -52,10 +113,9 @@ def find_note(data: dict, note_id: str) -> dict | None:
 
 
 def sort_key(note: dict) -> tuple:
-    return (
-        IMPORTANCE_ORDER.get(note.get("importance", "medium"), 99),
-        URGENCY_ORDER.get(note.get("urgency", "soon"), 99),
-    )
+    imp = IMPORTANCE_WEIGHT.get(note.get("importance", "medium"), 99)
+    urg = URGENCY_WEIGHT.get(note.get("urgency", "soon"), 99)
+    return (imp + urg, urg)
 
 
 def fmt_note(note: dict, show_links: bool = False) -> str:
@@ -87,6 +147,7 @@ def cmd_add(args) -> None:
     note = {
         "id": uid,
         "summary": args.summary,
+        "details": "",
         "status": "pending",
         "importance": args.importance,
         "urgency": args.urgency,
@@ -162,6 +223,8 @@ def cmd_set(args) -> None:
         note["urgency"] = args.urgency
     if args.summary:
         note["summary"] = args.summary
+    if args.details is not None:
+        note["details"] = args.details
     save(data)
     print(f"Updated {args.id}")
 
@@ -178,7 +241,9 @@ def cmd_link(args) -> None:
     is_url = raw.startswith("http://") or raw.startswith("https://")
 
     if is_url:
-        link = {"type": "url", "url": raw, "title": title or raw}
+        if not title:
+            title = _fetch_page_title(raw)
+        link = {"type": "url", "url": raw, "title": title}
     else:
         link = {"type": "ref", "text": raw}
 
@@ -243,6 +308,7 @@ def main() -> None:
     p_set.add_argument("--importance", choices=IMPORTANCE_VALUES)
     p_set.add_argument("--urgency", choices=URGENCY_VALUES)
     p_set.add_argument("--summary")
+    p_set.add_argument("--details", help="Set the details/notes text")
     p_set.set_defaults(func=cmd_set)
 
     p_link = sub.add_parser("link", help="Attach a link or text reference to a hotnote")

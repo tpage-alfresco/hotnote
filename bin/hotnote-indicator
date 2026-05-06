@@ -23,15 +23,23 @@ GLib.set_application_name("HotNote")
 SELF_PATH = os.path.realpath(__file__)
 
 HOTNOTES_PATH = os.path.expanduser("~/.local/share/hotnote/hotnotes.json")
+CONFIG_PATH = os.path.expanduser("~/.config/hotnote/config.json")
 ICON_DIR = os.path.expanduser("~/.local/share/hotnote")
 ICON_PATH = os.path.join(ICON_DIR, "icon.svg")
 ICON_NAME = "icon"
 
+DEFAULT_USELESS_PATTERNS = [r".*log in.*", r".*sign in.*"]
+
 IMPORTANCE_VALUES = ["critical", "high", "medium", "low"]
 URGENCY_VALUES = ["immediate", "soon", "whenever"]
 
-IMPORTANCE_ORDER = {v: i for i, v in enumerate(IMPORTANCE_VALUES)}
-URGENCY_ORDER = {v: i for i, v in enumerate(URGENCY_VALUES)}
+IMPORTANCE_WEIGHT = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+URGENCY_WEIGHT = {"immediate": 0, "soon": 1, "whenever": 2}
+
+IMPORTANCE_ICON = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}
+URGENCY_ICON = {"immediate": "⚡", "soon": "🕐", "whenever": "🌊"}
+
+MENU_MAX_CHARS = 40
 
 IMPORTANCE_COLORS = {
     "critical": "#ff1744",
@@ -47,6 +55,64 @@ URGENCY_COLORS = {
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def load_config() -> dict:
+    if not os.path.exists(CONFIG_PATH):
+        return {"useless_title_patterns": list(DEFAULT_USELESS_PATTERNS)}
+    try:
+        with open(CONFIG_PATH) as f:
+            cfg = json.load(f)
+        cfg.setdefault("useless_title_patterns", list(DEFAULT_USELESS_PATTERNS))
+        return cfg
+    except (json.JSONDecodeError, OSError):
+        return {"useless_title_patterns": list(DEFAULT_USELESS_PATTERNS)}
+
+
+def save_config(cfg: dict) -> None:
+    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+    with open(CONFIG_PATH, "w") as f:
+        json.dump(cfg, f, indent=2)
+        f.write("\n")
+
+
+def _is_useless_title(title: str) -> bool:
+    import re as _re
+    cfg = load_config()
+    lower = title.lower()
+    for pattern in cfg.get("useless_title_patterns", []):
+        try:
+            if _re.fullmatch(pattern, lower):
+                return True
+        except _re.error:
+            continue
+    return False
+
+
+def _domain(url: str) -> str:
+    from urllib.parse import urlparse
+    host = urlparse(url).hostname or url
+    return host.removeprefix("www.")
+
+
+def _fetch_page_title(url: str) -> str:
+    """Fetch the <title> of a URL. Falls back to the domain name."""
+    import re
+    from urllib.request import Request, urlopen
+    try:
+        req = Request(url, headers={"User-Agent": "Mozilla/5.0 (HotNote)"})
+        with urlopen(req, timeout=5) as resp:
+            chunk = resp.read(65536).decode("utf-8", errors="ignore")
+        match = re.search(r"<title[^>]*>(.*?)</title>", chunk, re.IGNORECASE | re.DOTALL)
+        if match:
+            import html
+            title = html.unescape(match.group(1)).strip()
+            if not _is_useless_title(title):
+                return title
+    except Exception:
+        pass
+    return _domain(url)
+
 
 def _safe_mtime(path: str) -> float:
     try:
@@ -70,10 +136,9 @@ def save_hotnotes(notes: list) -> None:
 
 
 def sort_key(note: dict) -> tuple:
-    return (
-        IMPORTANCE_ORDER.get(note.get("importance", "medium"), 99),
-        URGENCY_ORDER.get(note.get("urgency", "soon"), 99),
-    )
+    imp = IMPORTANCE_WEIGHT.get(note.get("importance", "medium"), 99)
+    urg = URGENCY_WEIGHT.get(note.get("urgency", "soon"), 99)
+    return (imp + urg, urg)
 
 
 def now_iso() -> str:
@@ -188,6 +253,42 @@ window.hotnote-window {
 .done-btn:hover {
     color: #ff8f00;
 }
+
+.detail-header {
+    padding: 16px;
+    background-color: rgba(255, 109, 0, 0.08);
+    border-bottom: 2px solid rgba(255, 109, 0, 0.25);
+}
+
+.detail-section-title {
+    font-weight: bold;
+    color: #ff6d00;
+}
+
+.detail-link-row {
+    padding: 4px 0;
+}
+
+.detail-edit-btn {
+    color: #ff6d00;
+    font-weight: bold;
+}
+
+.detail-save-btn {
+    background-image: linear-gradient(to right, #ff6d00, #ff1744);
+    color: white;
+    font-weight: bold;
+    border: none;
+    border-radius: 4px;
+    padding: 6px 16px;
+}
+
+.detail-delete-link {
+    color: #ff1744;
+    min-width: 0;
+    min-height: 0;
+    padding: 2px 6px;
+}
 """
 
 _css_provider = Gtk.CssProvider()
@@ -222,6 +323,394 @@ def _make_link_button(lnk: dict) -> Gtk.Button:
     return btn
 
 
+# ── Detail Dialog ─────────────────────────────────────────────────────────────
+
+class DetailDialog(Gtk.Dialog):
+    """Shows full note details with view/edit modes."""
+
+    def __init__(self, parent: Gtk.Window, note_id: str):
+        self._note_id = note_id
+        self._editing = False
+
+        note = self._load_note()
+        if not note:
+            super().__init__(title="Not Found", transient_for=parent, modal=True)
+            self.get_content_area().pack_start(Gtk.Label(label="Note not found."), True, True, 20)
+            self.add_button(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
+            self.show_all()
+            return
+
+        super().__init__(
+            title=f"HotNote — {note['summary'][:40]}",
+            transient_for=parent,
+            modal=True,
+            destroy_with_parent=True,
+        )
+        self.set_default_size(560, 480)
+        self.get_style_context().add_class("hotnote-window")
+
+        self._content = self.get_content_area()
+        self._content.set_spacing(0)
+        self._build_view(note)
+        self.show_all()
+
+    def _load_note(self) -> dict | None:
+        notes = load_hotnotes()
+        for n in notes:
+            if n["id"] == self._note_id:
+                return n
+        return None
+
+    def _save_note(self, note: dict) -> None:
+        notes = load_hotnotes()
+        for i, n in enumerate(notes):
+            if n["id"] == self._note_id:
+                notes[i] = note
+                break
+        save_hotnotes(notes)
+
+    def _clear_content(self) -> None:
+        for child in self._content.get_children():
+            self._content.remove(child)
+
+    # ── View mode ─────────────────────────────────────────────────────────────
+
+    def _build_view(self, note: dict) -> None:
+        self._clear_content()
+
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        header.get_style_context().add_class("detail-header")
+        header.set_border_width(0)
+        self._content.pack_start(header, False, False, 0)
+
+        summary_lbl = Gtk.Label()
+        escaped = GLib.markup_escape_text(note["summary"])
+        summary_lbl.set_markup(f'<span size="large" weight="bold">{escaped}</span>')
+        summary_lbl.set_xalign(0)
+        summary_lbl.set_line_wrap(True)
+        summary_lbl.set_max_width_chars(60)
+        summary_lbl.set_hexpand(True)
+        header.pack_start(summary_lbl, True, True, 0)
+
+        edit_btn = Gtk.Button(label="✏️ Edit")
+        edit_btn.get_style_context().add_class("detail-edit-btn")
+        edit_btn.set_relief(Gtk.ReliefStyle.NONE)
+        edit_btn.connect("clicked", self._switch_to_edit)
+        header.pack_end(edit_btn, False, False, 0)
+
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        body.set_border_width(16)
+        self._content.pack_start(body, True, True, 0)
+
+        # Metadata row
+        meta_grid = Gtk.Grid()
+        meta_grid.set_column_spacing(16)
+        meta_grid.set_row_spacing(6)
+        body.pack_start(meta_grid, False, False, 0)
+
+        imp = note.get("importance", "medium")
+        urg = note.get("urgency", "soon")
+        meta_grid.attach(Gtk.Label(label="Importance:", xalign=0), 0, 0, 1, 1)
+        meta_grid.attach(colored_label(imp, IMPORTANCE_COLORS.get(imp, "#ccc")), 1, 0, 1, 1)
+        meta_grid.attach(Gtk.Label(label="Urgency:", xalign=0), 0, 1, 1, 1)
+        meta_grid.attach(colored_label(urg, URGENCY_COLORS.get(urg, "#ccc")), 1, 1, 1, 1)
+        meta_grid.attach(Gtk.Label(label="Created:", xalign=0), 0, 2, 1, 1)
+        meta_grid.attach(Gtk.Label(label=note.get("created", "—")[:10], xalign=0), 1, 2, 1, 1)
+
+        # Details/notes field
+        details_text = note.get("details", "")
+        if details_text:
+            det_title = Gtk.Label()
+            det_title.set_markup('<span foreground="#ff6d00" weight="bold">Notes</span>')
+            det_title.set_xalign(0)
+            body.pack_start(det_title, False, False, 0)
+
+            det_lbl = Gtk.Label(label=details_text)
+            det_lbl.set_xalign(0)
+            det_lbl.set_line_wrap(True)
+            det_lbl.set_selectable(True)
+            body.pack_start(det_lbl, False, False, 0)
+
+        # Links section
+        links = note.get("links", [])
+        link_title = Gtk.Label()
+        link_title.set_markup(f'<span foreground="#ff6d00" weight="bold">Links ({len(links)})</span>')
+        link_title.set_xalign(0)
+        body.pack_start(link_title, False, False, 0)
+
+        if links:
+            for lnk in links:
+                row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+                row.get_style_context().add_class("detail-link-row")
+                icon, title = _link_icon_and_label(lnk)
+                btn = Gtk.Button(label=f"{icon} {title}")
+                btn.set_relief(Gtk.ReliefStyle.NONE)
+                btn.set_tooltip_text(lnk.get("url", lnk.get("text", "")))
+                btn.connect("clicked", lambda _b, l=lnk: open_link(l))
+                row.pack_start(btn, False, False, 0)
+                body.pack_start(row, False, False, 0)
+        else:
+            body.pack_start(Gtk.Label(label="No links yet.", xalign=0), False, False, 0)
+
+        # Close button at the bottom
+        close_btn = Gtk.Button(label="Close")
+        close_btn.connect("clicked", lambda _b: self.destroy())
+        btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        btn_box.pack_end(close_btn, False, False, 0)
+        body.pack_end(btn_box, False, False, 0)
+
+        self._content.show_all()
+
+    # ── Edit mode ─────────────────────────────────────────────────────────────
+
+    def _switch_to_edit(self, _widget=None) -> None:
+        note = self._load_note()
+        if not note:
+            return
+        self._editing = True
+        self._build_edit(note)
+
+    def _build_edit(self, note: dict) -> None:
+        self._clear_content()
+
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        header.get_style_context().add_class("detail-header")
+        self._content.pack_start(header, False, False, 0)
+
+        header_lbl = Gtk.Label()
+        header_lbl.set_markup('<span size="large" weight="bold">✏️ Editing</span>')
+        header_lbl.set_xalign(0)
+        header_lbl.set_hexpand(True)
+        header.pack_start(header_lbl, True, True, 0)
+
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        body.set_border_width(16)
+        self._content.pack_start(body, True, True, 0)
+
+        # Summary
+        body.pack_start(Gtk.Label(label="Summary:", xalign=0), False, False, 0)
+        self._edit_summary = Gtk.Entry()
+        self._edit_summary.set_text(note.get("summary", ""))
+        body.pack_start(self._edit_summary, False, False, 0)
+
+        # Details (multiline)
+        body.pack_start(Gtk.Label(label="Notes / details:", xalign=0), False, False, 0)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_min_content_height(80)
+        scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        self._edit_details_buf = Gtk.TextBuffer()
+        self._edit_details_buf.set_text(note.get("details", ""))
+        details_view = Gtk.TextView(buffer=self._edit_details_buf)
+        details_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        scroll.add(details_view)
+        body.pack_start(scroll, False, False, 0)
+
+        # Importance / Urgency
+        level_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        body.pack_start(level_box, False, False, 0)
+
+        level_box.pack_start(Gtk.Label(label="Importance:"), False, False, 0)
+        self._edit_imp = Gtk.ComboBoxText()
+        for v in IMPORTANCE_VALUES:
+            self._edit_imp.append_text(v)
+        cur_imp = note.get("importance", "medium")
+        self._edit_imp.set_active(IMPORTANCE_VALUES.index(cur_imp) if cur_imp in IMPORTANCE_VALUES else 2)
+        level_box.pack_start(self._edit_imp, False, False, 0)
+
+        level_box.pack_start(Gtk.Label(label="Urgency:"), False, False, 0)
+        self._edit_urg = Gtk.ComboBoxText()
+        for v in URGENCY_VALUES:
+            self._edit_urg.append_text(v)
+        cur_urg = note.get("urgency", "soon")
+        self._edit_urg.set_active(URGENCY_VALUES.index(cur_urg) if cur_urg in URGENCY_VALUES else 1)
+        level_box.pack_start(self._edit_urg, False, False, 0)
+
+        # Links section with CRUD
+        link_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        body.pack_start(link_header, False, False, 0)
+        link_title = Gtk.Label()
+        link_title.set_markup('<span foreground="#ff6d00" weight="bold">Links</span>')
+        link_title.set_xalign(0)
+        link_header.pack_start(link_title, False, False, 0)
+
+        add_link_btn = Gtk.Button(label="+ Add link")
+        add_link_btn.set_relief(Gtk.ReliefStyle.NONE)
+        add_link_btn.connect("clicked", self._on_edit_add_link)
+        link_header.pack_end(add_link_btn, False, False, 0)
+
+        self._links_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        body.pack_start(self._links_box, False, False, 0)
+
+        self._edit_links = list(note.get("links", []))
+        self._rebuild_links_list()
+
+        # Action buttons
+        spacer = Gtk.Box()
+        spacer.set_vexpand(True)
+        body.pack_start(spacer, True, True, 0)
+
+        btn_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        body.pack_end(btn_row, False, False, 0)
+
+        cancel_btn = Gtk.Button(label="Cancel")
+        cancel_btn.connect("clicked", self._on_edit_cancel)
+        btn_row.pack_end(cancel_btn, False, False, 0)
+
+        save_btn = Gtk.Button(label="💾 Save")
+        save_btn.get_style_context().add_class("detail-save-btn")
+        save_btn.connect("clicked", self._on_edit_save)
+        btn_row.pack_end(save_btn, False, False, 0)
+
+        self._content.show_all()
+
+    def _rebuild_links_list(self) -> None:
+        for child in self._links_box.get_children():
+            self._links_box.remove(child)
+
+        for idx, lnk in enumerate(self._edit_links):
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            icon, title = _link_icon_and_label(lnk)
+            lbl = Gtk.Label(label=f"{icon} {title}")
+            lbl.set_xalign(0)
+            lbl.set_ellipsize(Pango.EllipsizeMode.END)
+            lbl.set_max_width_chars(50)
+            lbl.set_tooltip_text(lnk.get("url", lnk.get("text", "")))
+            row.pack_start(lbl, True, True, 0)
+
+            edit_btn = Gtk.Button(label="✏️")
+            edit_btn.set_relief(Gtk.ReliefStyle.NONE)
+            edit_btn.set_tooltip_text("Edit this link")
+            edit_btn.connect("clicked", self._on_edit_link, idx)
+            row.pack_start(edit_btn, False, False, 0)
+
+            del_btn = Gtk.Button(label="✕")
+            del_btn.get_style_context().add_class("detail-delete-link")
+            del_btn.set_relief(Gtk.ReliefStyle.NONE)
+            del_btn.set_tooltip_text("Remove this link")
+            del_btn.connect("clicked", self._on_remove_link, idx)
+            row.pack_start(del_btn, False, False, 0)
+
+            self._links_box.pack_start(row, False, False, 0)
+
+        if not self._edit_links:
+            self._links_box.pack_start(Gtk.Label(label="No links.", xalign=0), False, False, 0)
+
+        self._links_box.show_all()
+
+    def _on_edit_add_link(self, _widget) -> None:
+        result = self._link_entry_dialog("Add Link / Reference", "", "")
+        if result:
+            value, title = result
+            if value:
+                is_url = value.startswith("http://") or value.startswith("https://")
+                if is_url:
+                    if not title:
+                        title = _fetch_page_title(value)
+                    self._edit_links.append({"type": "url", "url": value, "title": title})
+                else:
+                    self._edit_links.append({"type": "ref", "text": value})
+                self._rebuild_links_list()
+
+    def _on_edit_link(self, _widget, idx: int) -> None:
+        lnk = self._edit_links[idx]
+        if lnk["type"] == "url":
+            pre_value = lnk.get("url", "")
+            pre_title = lnk.get("title", "")
+        else:
+            pre_value = lnk.get("text", "")
+            pre_title = ""
+
+        result = self._link_entry_dialog("Edit Link / Reference", pre_value, pre_title)
+        if result:
+            value, title = result
+            if value:
+                is_url = value.startswith("http://") or value.startswith("https://")
+                if is_url:
+                    if not title:
+                        title = _fetch_page_title(value)
+                    self._edit_links[idx] = {"type": "url", "url": value, "title": title}
+                else:
+                    self._edit_links[idx] = {"type": "ref", "text": value}
+                self._rebuild_links_list()
+
+    def _on_remove_link(self, _widget, idx: int) -> None:
+        del self._edit_links[idx]
+        self._rebuild_links_list()
+
+    def _link_entry_dialog(self, title: str, pre_value: str, pre_title: str) -> tuple | None:
+        dialog = Gtk.Dialog(title=title, transient_for=self, modal=True)
+        dialog.add_buttons(
+            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+            Gtk.STOCK_OK, Gtk.ResponseType.OK,
+        )
+        dialog.set_default_size(420, -1)
+        dialog.set_default_response(Gtk.ResponseType.OK)
+
+        content = dialog.get_content_area()
+        content.set_spacing(8)
+        content.set_border_width(12)
+
+        hint_lbl = Gtk.Label()
+        hint_lbl.set_markup(
+            '<span foreground="#888888">Paste a URL (http…) to add a web link, '
+            "or any text for a clipboard reference.</span>"
+        )
+        hint_lbl.set_xalign(0)
+        hint_lbl.set_line_wrap(True)
+        content.pack_start(hint_lbl, False, False, 0)
+
+        value_entry = Gtk.Entry()
+        value_entry.set_placeholder_text("https://… or text reference")
+        value_entry.set_text(pre_value)
+        value_entry.set_activates_default(True)
+        content.pack_start(value_entry, False, False, 0)
+
+        title_entry = Gtk.Entry()
+        title_entry.set_placeholder_text("Display title (for URLs only, optional)")
+        title_entry.set_text(pre_title)
+        title_entry.set_activates_default(True)
+        content.pack_start(title_entry, False, False, 0)
+
+        dialog.show_all()
+        response = dialog.run()
+        result = None
+        if response == Gtk.ResponseType.OK:
+            result = (value_entry.get_text().strip(), title_entry.get_text().strip())
+        dialog.destroy()
+        return result
+
+    def _on_edit_save(self, _widget) -> None:
+        note = self._load_note()
+        if not note:
+            self.destroy()
+            return
+
+        note["summary"] = self._edit_summary.get_text().strip() or note["summary"]
+
+        start = self._edit_details_buf.get_start_iter()
+        end = self._edit_details_buf.get_end_iter()
+        note["details"] = self._edit_details_buf.get_text(start, end, False).strip()
+
+        note["importance"] = IMPORTANCE_VALUES[self._edit_imp.get_active()]
+        note["urgency"] = URGENCY_VALUES[self._edit_urg.get_active()]
+        note["links"] = self._edit_links
+
+        self._save_note(note)
+        self._editing = False
+        self._build_view(note)
+
+        if self.get_transient_for():
+            self.get_transient_for().refresh()
+
+    def _on_edit_cancel(self, _widget) -> None:
+        note = self._load_note()
+        if note:
+            self._editing = False
+            self._build_view(note)
+        else:
+            self.destroy()
+
+
 # ── GTK Window ────────────────────────────────────────────────────────────────
 
 class HotNoteWindow(Gtk.Window):
@@ -243,7 +732,14 @@ class HotNoteWindow(Gtk.Window):
         title_lbl = Gtk.Label()
         title_lbl.set_markup('<span foreground="#ff6d00" size="x-large" weight="bold">🔥 HotNote</span>')
         title_lbl.set_xalign(0)
-        header_box.pack_start(title_lbl, False, False, 0)
+        header_box.pack_start(title_lbl, True, True, 0)
+
+        settings_btn = Gtk.Button(label="⚙️")
+        settings_btn.set_relief(Gtk.ReliefStyle.NONE)
+        settings_btn.set_tooltip_text("Settings")
+        settings_btn.connect("clicked", self._on_settings)
+        header_box.pack_end(settings_btn, False, False, 0)
+
         vbox.pack_start(header_box, False, False, 0)
 
         # ── Add form ──────────────────────────────────────────────────────────
@@ -317,15 +813,19 @@ class HotNoteWindow(Gtk.Window):
         top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         vbox.pack_start(top, False, False, 0)
 
+        summary_btn = Gtk.Button()
+        summary_btn.set_relief(Gtk.ReliefStyle.NONE)
         summary_lbl = Gtk.Label()
         escaped = GLib.markup_escape_text(note["summary"])
         summary_lbl.set_markup(f'<b><big>{escaped}</big></b>')
         summary_lbl.set_xalign(0)
-        summary_lbl.set_hexpand(True)
         summary_lbl.set_ellipsize(Pango.EllipsizeMode.END)
         summary_lbl.set_max_width_chars(45)
-        summary_lbl.set_tooltip_text(note["summary"])
-        top.pack_start(summary_lbl, True, True, 0)
+        summary_btn.add(summary_lbl)
+        summary_btn.set_tooltip_text("Click to open details")
+        summary_btn.set_hexpand(True)
+        summary_btn.connect("clicked", self._on_open_detail, note["id"])
+        top.pack_start(summary_btn, True, True, 0)
 
         imp = note.get("importance", "medium")
         imp_lbl = colored_label(imp, IMPORTANCE_COLORS.get(imp, "#000"))
@@ -419,6 +919,125 @@ class HotNoteWindow(Gtk.Window):
 
     # ── Actions ───────────────────────────────────────────────────────────────
 
+    def _on_settings(self, _widget) -> None:
+        dlg = Gtk.Dialog(
+            title="HotNote Settings",
+            transient_for=self,
+            modal=True,
+            destroy_with_parent=True,
+        )
+        dlg.add_buttons(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
+        dlg.set_default_size(480, 360)
+        dlg.get_style_context().add_class("hotnote-window")
+
+        content = dlg.get_content_area()
+        content.set_spacing(8)
+        content.set_border_width(12)
+
+        title_lbl = Gtk.Label()
+        title_lbl.set_markup(
+            '<span foreground="#ff6d00" weight="bold">Useless Title Patterns</span>'
+        )
+        title_lbl.set_xalign(0)
+        content.pack_start(title_lbl, False, False, 0)
+
+        hint_lbl = Gtk.Label()
+        hint_lbl.set_markup(
+            '<span foreground="#888888">Regex patterns (case-insensitive). '
+            "Fetched page titles matching any pattern will be discarded in favour of the domain name.</span>"
+        )
+        hint_lbl.set_xalign(0)
+        hint_lbl.set_line_wrap(True)
+        content.pack_start(hint_lbl, False, False, 0)
+
+        cfg = load_config()
+        patterns = list(cfg.get("useless_title_patterns", []))
+
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_vexpand(True)
+        content.pack_start(scroll, True, True, 0)
+
+        list_box = Gtk.ListBox()
+        list_box.set_selection_mode(Gtk.SelectionMode.NONE)
+        scroll.add(list_box)
+
+        def rebuild():
+            for child in list_box.get_children():
+                list_box.remove(child)
+            for idx, pat in enumerate(patterns):
+                row = Gtk.ListBoxRow()
+                row.set_selectable(False)
+                hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+                hbox.set_border_width(4)
+                lbl = Gtk.Label(label=pat)
+                lbl.set_xalign(0)
+                lbl.set_hexpand(True)
+                lbl.set_selectable(True)
+                hbox.pack_start(lbl, True, True, 0)
+                del_btn = Gtk.Button(label="✕")
+                del_btn.set_relief(Gtk.ReliefStyle.NONE)
+                del_btn.set_tooltip_text("Remove this pattern")
+                del_btn.connect("clicked", lambda _b, i=idx: on_remove(i))
+                hbox.pack_end(del_btn, False, False, 0)
+                row.add(hbox)
+                list_box.add(row)
+            list_box.show_all()
+
+        def on_remove(idx):
+            del patterns[idx]
+            cfg["useless_title_patterns"] = patterns
+            save_config(cfg)
+            rebuild()
+
+        rebuild()
+
+        add_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        content.pack_start(add_box, False, False, 0)
+
+        add_entry = Gtk.Entry()
+        add_entry.set_placeholder_text("New regex pattern, e.g. .*captcha.*")
+        add_entry.set_hexpand(True)
+        add_box.pack_start(add_entry, True, True, 0)
+
+        def on_add(_widget=None):
+            text = add_entry.get_text().strip()
+            if not text:
+                return
+            import re as _re
+            try:
+                _re.compile(text)
+            except _re.error as e:
+                err_dlg = Gtk.MessageDialog(
+                    transient_for=dlg, modal=True,
+                    message_type=Gtk.MessageType.ERROR,
+                    buttons=Gtk.ButtonsType.OK,
+                    text=f"Invalid regex: {e}",
+                )
+                err_dlg.run()
+                err_dlg.destroy()
+                return
+            patterns.append(text)
+            cfg["useless_title_patterns"] = patterns
+            save_config(cfg)
+            add_entry.set_text("")
+            rebuild()
+
+        add_entry.connect("activate", on_add)
+
+        add_btn = Gtk.Button(label="+ Add")
+        add_btn.connect("clicked", on_add)
+        add_box.pack_end(add_btn, False, False, 0)
+
+        dlg.show_all()
+        dlg.run()
+        dlg.destroy()
+
+    def _on_open_detail(self, _widget, note_id: str) -> None:
+        dlg = DetailDialog(self, note_id)
+        dlg.connect("destroy", lambda _d: self.refresh())
+        dlg.show_all()
+
     def _on_add(self, _widget) -> None:
         text = self.entry.get_text().strip()
         if not text:
@@ -434,6 +1053,7 @@ class HotNoteWindow(Gtk.Window):
         notes.append({
             "id": uid,
             "summary": text,
+            "details": "",
             "status": "pending",
             "importance": imp,
             "urgency": urg,
@@ -513,8 +1133,10 @@ class HotNoteWindow(Gtk.Window):
                 for t in notes:
                     if t["id"] == note_id:
                         if is_url:
+                            if not title:
+                                title = _fetch_page_title(value)
                             t.setdefault("links", []).append({
-                                "type": "url", "url": value, "title": title or value,
+                                "type": "url", "url": value, "title": title,
                             })
                         else:
                             t.setdefault("links", []).append({
@@ -603,7 +1225,13 @@ class HotNoteIndicator:
             for note in items:
                 imp = note.get("importance", "medium")
                 urg = note.get("urgency", "soon")
-                label = f"[{imp[0].upper()}/{urg[0].upper()}] {note['summary']}"
+                summary = note["summary"]
+                if len(summary) > MENU_MAX_CHARS:
+                    summary = summary[:MENU_MAX_CHARS - 1] + "…"
+                summary = summary.ljust(MENU_MAX_CHARS)
+                imp_icon = IMPORTANCE_ICON.get(imp, "")
+                urg_icon = URGENCY_ICON.get(urg, "")
+                label = f"{summary} {imp_icon}{urg_icon}"
                 item = Gtk.MenuItem(label=label)
                 first_link = next(
                     (l for l in note.get("links", []) if l["type"] in ("ref", "url")),
