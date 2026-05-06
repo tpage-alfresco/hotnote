@@ -5,6 +5,7 @@ ICONDIR  = $(DATADIR)/icons/hicolor/scalable/apps
 APPDIR   = $(DATADIR)/applications
 AUTODIR  = $(HOME)/.config/autostart
 HNDATA   = $(DATADIR)/hotnote
+LIBDIR   = $(DATADIR)/hotnote/lib
 
 .PHONY: install uninstall
 
@@ -12,6 +13,7 @@ install:
 	@echo "Installing HotNote to $(PREFIX) …"
 	install -Dm755 bin/hotnote           $(BINDIR)/hotnote
 	install -Dm755 bin/hotnote-indicator $(BINDIR)/hotnote-indicator
+	install -Dm644 lib/hotnotelib.py     $(LIBDIR)/hotnotelib.py
 	install -Dm644 data/icons/hotnote.svg      $(ICONDIR)/hotnote.svg
 	install -Dm644 data/icons/hotnote-tray.svg $(HNDATA)/icon.svg
 	mkdir -p $(APPDIR) $(AUTODIR)
@@ -27,6 +29,8 @@ uninstall:
 	@echo "Removing HotNote from $(PREFIX) …"
 	rm -f $(BINDIR)/hotnote
 	rm -f $(BINDIR)/hotnote-indicator
+	rm -f $(LIBDIR)/hotnotelib.py
+	rmdir $(LIBDIR) 2>/dev/null || true
 	rm -f $(ICONDIR)/hotnote.svg
 	rm -f $(HNDATA)/icon.svg
 	rm -f $(APPDIR)/hotnote.desktop

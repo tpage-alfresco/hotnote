@@ -1,14 +1,38 @@
 #!/usr/bin/env python3
 """HotNote — AppIndicator daemon + GTK window."""
 
-import argparse
-import json
 import os
-import random
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+sys.path.insert(0, os.path.expanduser("~/.local/share/hotnote/lib"))
+
+import argparse
 import re
 import subprocess
-import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
+
+from hotnotelib import (
+    HOTNOTES_PATH,
+    IMPORTANCE_VALUES,
+    IMPORTANCE_WEIGHT,
+    URGENCY_VALUES,
+    URGENCY_WEIGHT,
+    advance_next_due,
+    completed,
+    fetch_page_title,
+    fmt_recur_short,
+    load_config,
+    load_notes,
+    new_id,
+    now_iso,
+    parse_recur,
+    pending,
+    recur_resurrect,
+    save_config,
+    save_notes,
+    sort_key,
+)
 
 import gi
 
@@ -23,19 +47,9 @@ GLib.set_application_name("HotNote")
 
 SELF_PATH = os.path.realpath(__file__)
 
-HOTNOTES_PATH = os.path.expanduser("~/.local/share/hotnote/hotnotes.json")
-CONFIG_PATH = os.path.expanduser("~/.config/hotnote/config.json")
 ICON_DIR = os.path.expanduser("~/.local/share/hotnote")
 ICON_PATH = os.path.join(ICON_DIR, "icon.svg")
 ICON_NAME = "icon"
-
-DEFAULT_USELESS_PATTERNS = [r".*log in.*", r".*sign in.*"]
-
-IMPORTANCE_VALUES = ["critical", "high", "medium", "low"]
-URGENCY_VALUES = ["immediate", "soon", "whenever"]
-
-IMPORTANCE_WEIGHT = {"critical": 0, "high": 1, "medium": 2, "low": 3}
-URGENCY_WEIGHT = {"immediate": 0, "soon": 1, "whenever": 2}
 
 IMPORTANCE_ICON = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}
 URGENCY_ICON = {"immediate": "⚡", "soon": "🕐", "whenever": "🌊"}
@@ -58,153 +72,11 @@ URGENCY_COLORS = {
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-def load_config() -> dict:
-    if not os.path.exists(CONFIG_PATH):
-        return {"useless_title_patterns": list(DEFAULT_USELESS_PATTERNS)}
-    try:
-        with open(CONFIG_PATH) as f:
-            cfg = json.load(f)
-        cfg.setdefault("useless_title_patterns", list(DEFAULT_USELESS_PATTERNS))
-        return cfg
-    except (json.JSONDecodeError, OSError):
-        return {"useless_title_patterns": list(DEFAULT_USELESS_PATTERNS)}
-
-
-def save_config(cfg: dict) -> None:
-    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-    with open(CONFIG_PATH, "w") as f:
-        json.dump(cfg, f, indent=2)
-        f.write("\n")
-
-
-def _is_useless_title(title: str) -> bool:
-    cfg = load_config()
-    lower = title.lower()
-    for pattern in cfg.get("useless_title_patterns", []):
-        try:
-            if re.fullmatch(pattern, lower):
-                return True
-        except re.error:
-            continue
-    return False
-
-
-def _domain(url: str) -> str:
-    from urllib.parse import urlparse
-    host = urlparse(url).hostname or url
-    return host.removeprefix("www.")
-
-
-def _fetch_page_title(url: str) -> str:
-    """Fetch the <title> of a URL. Falls back to the domain name."""
-    from urllib.request import Request, urlopen
-    try:
-        req = Request(url, headers={"User-Agent": "Mozilla/5.0 (HotNote)"})
-        with urlopen(req, timeout=5) as resp:
-            chunk = resp.read(65536).decode("utf-8", errors="ignore")
-        match = re.search(r"<title[^>]*>(.*?)</title>", chunk, re.IGNORECASE | re.DOTALL)
-        if match:
-            import html
-            title = html.unescape(match.group(1)).strip()
-            if not _is_useless_title(title):
-                return title
-    except Exception:
-        pass
-    return _domain(url)
-
-
 def _safe_mtime(path: str) -> float:
     try:
         return os.path.getmtime(path)
     except OSError:
         return 0.0
-
-
-def load_hotnotes() -> list:
-    if not os.path.exists(HOTNOTES_PATH):
-        return []
-    with open(HOTNOTES_PATH) as f:
-        return json.load(f).get("hotnotes", [])
-
-
-def save_hotnotes(notes: list) -> None:
-    data = {"hotnotes": notes}
-    with open(HOTNOTES_PATH, "w") as f:
-        json.dump(data, f, indent=2)
-        f.write("\n")
-
-
-def sort_key(note: dict) -> tuple:
-    imp = IMPORTANCE_WEIGHT.get(note.get("importance", "medium"), 99)
-    urg = URGENCY_WEIGHT.get(note.get("urgency", "soon"), 99)
-    return (imp + urg, urg)
-
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-_RECUR_RE = re.compile(r"^(\d+)\s*([dwm])$", re.IGNORECASE)
-_UNIT_MAP = {"d": "days", "w": "weeks", "m": "months"}
-
-
-def parse_recur(spec: str) -> dict | None:
-    if spec.lower() == "none":
-        return None
-    m = _RECUR_RE.match(spec.strip())
-    if not m:
-        return None
-    return {"every": int(m.group(1)), "unit": _UNIT_MAP[m.group(2).lower()]}
-
-
-def advance_next_due(prev_due: str, recur: dict) -> str:
-    from dateutil.relativedelta import relativedelta
-    dt = datetime.fromisoformat(prev_due.replace("Z", "+00:00"))
-    unit = recur["unit"]
-    every = recur["every"]
-    if unit == "days":
-        dt += timedelta(days=every)
-    elif unit == "weeks":
-        dt += timedelta(weeks=every)
-    elif unit == "months":
-        dt += relativedelta(months=every)
-    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def recur_resurrect(notes: list) -> bool:
-    """Flip done recurring notes back to pending if next_due has passed."""
-    now = datetime.now(timezone.utc)
-    changed = False
-    for note in notes:
-        if note.get("status") != "done":
-            continue
-        if not note.get("recur") or not note.get("next_due"):
-            continue
-        due = datetime.fromisoformat(note["next_due"].replace("Z", "+00:00"))
-        if due <= now:
-            note["status"] = "pending"
-            note["completed"] = None
-            changed = True
-    return changed
-
-
-def fmt_recur_short(note: dict) -> str:
-    recur = note.get("recur")
-    if not recur:
-        return ""
-    every = recur["every"]
-    unit = recur["unit"]
-    short = {"days": "d", "weeks": "w", "months": "mo"}[unit]
-    return f"↻{every}{short}"
-
-
-def pending(notes: list) -> list:
-    return sorted([t for t in notes if t.get("status") != "done"], key=sort_key)
-
-
-def completed(notes: list) -> list:
-    done = [t for t in notes if t.get("status") == "done"]
-    return sorted(done, key=lambda t: t.get("completed", ""), reverse=True)
 
 
 def open_link(link: dict) -> None:
@@ -408,19 +280,19 @@ class DetailDialog(Gtk.Dialog):
         self.show_all()
 
     def _load_note(self) -> dict | None:
-        notes = load_hotnotes()
+        notes = load_notes()
         for n in notes:
             if n["id"] == self._note_id:
                 return n
         return None
 
     def _save_note(self, note: dict) -> None:
-        notes = load_hotnotes()
+        notes = load_notes()
         for i, n in enumerate(notes):
             if n["id"] == self._note_id:
                 notes[i] = note
                 break
-        save_hotnotes(notes)
+        save_notes(notes)
 
     def _clear_content(self) -> None:
         for child in self._content.get_children():
@@ -714,7 +586,7 @@ class DetailDialog(Gtk.Dialog):
                 is_url = value.startswith("http://") or value.startswith("https://")
                 if is_url:
                     if not title:
-                        title = _fetch_page_title(value)
+                        title = fetch_page_title(value)
                     self._edit_links.append({"type": "url", "url": value, "title": title})
                 else:
                     self._edit_links.append({"type": "ref", "text": value})
@@ -736,7 +608,7 @@ class DetailDialog(Gtk.Dialog):
                 is_url = value.startswith("http://") or value.startswith("https://")
                 if is_url:
                     if not title:
-                        title = _fetch_page_title(value)
+                        title = fetch_page_title(value)
                     self._edit_links[idx] = {"type": "url", "url": value, "title": title}
                 else:
                     self._edit_links[idx] = {"type": "ref", "text": value}
@@ -1247,12 +1119,8 @@ class HotNoteWindow(Gtk.Window):
             return
         imp = IMPORTANCE_VALUES[self.imp_combo.get_active()]
         urg = URGENCY_VALUES[self.urg_combo.get_active()]
-        notes = load_hotnotes()
-        existing_ids = {t["id"] for t in notes}
-        while True:
-            uid = f"{random.randint(0, 0xFFFFFF):06x}"
-            if uid not in existing_ids:
-                break
+        notes = load_notes()
+        uid = new_id(notes)
         note = {
             "id": uid,
             "summary": text,
@@ -1275,29 +1143,29 @@ class HotNoteWindow(Gtk.Window):
                 note["first_due"] = first
                 note["next_due"] = f"{first}T00:00:00Z"
         notes.append(note)
-        save_hotnotes(notes)
+        save_notes(notes)
         self.entry.set_text("")
         self.recur_toggle.set_active(False)
         self.refresh()
 
     def _on_done(self, _widget, note_id: str) -> None:
-        notes = load_hotnotes()
+        notes = load_notes()
         for t in notes:
             if t["id"] == note_id:
                 t["status"] = "done"
                 t["completed"] = now_iso()
                 if t.get("recur") and t.get("next_due"):
                     t["next_due"] = advance_next_due(t["next_due"], t["recur"])
-        save_hotnotes(notes)
+        save_notes(notes)
         self.refresh()
 
     def _on_reopen(self, _widget, note_id: str) -> None:
-        notes = load_hotnotes()
+        notes = load_notes()
         for t in notes:
             if t["id"] == note_id:
                 t["status"] = "pending"
                 t["completed"] = None
-        save_hotnotes(notes)
+        save_notes(notes)
         self.refresh()
 
     def _on_add_link(self, _widget, note_id: str) -> None:
@@ -1346,12 +1214,12 @@ class HotNoteWindow(Gtk.Window):
 
             if value:
                 is_url = value.startswith("http://") or value.startswith("https://")
-                notes = load_hotnotes()
+                notes = load_notes()
                 for t in notes:
                     if t["id"] == note_id:
                         if is_url:
                             if not title:
-                                title = _fetch_page_title(value)
+                                title = fetch_page_title(value)
                             t.setdefault("links", []).append({
                                 "type": "url", "url": value, "title": title,
                             })
@@ -1360,15 +1228,15 @@ class HotNoteWindow(Gtk.Window):
                                 "type": "ref", "text": value,
                             })
                         break
-                save_hotnotes(notes)
+                save_notes(notes)
                 self.refresh()
 
         dialog.destroy()
 
     def _on_delete(self, _widget, note_id: str) -> None:
-        notes = load_hotnotes()
+        notes = load_notes()
         notes = [t for t in notes if t["id"] != note_id]
-        save_hotnotes(notes)
+        save_notes(notes)
         self.refresh()
 
     def refresh(self) -> None:
@@ -1377,7 +1245,7 @@ class HotNoteWindow(Gtk.Window):
         for child in self.done_list_box.get_children():
             self.done_list_box.remove(child)
 
-        notes = load_hotnotes()
+        notes = load_notes()
         for note in pending(notes):
             self.pending_list_box.add(self._make_pending_row(note))
         for note in completed(notes):
@@ -1420,9 +1288,9 @@ class HotNoteIndicator:
         except OSError:
             return True
 
-        notes = load_hotnotes()
+        notes = load_notes()
         if recur_resurrect(notes):
-            save_hotnotes(notes)
+            save_notes(notes)
             mtime = os.path.getmtime(HOTNOTES_PATH)
 
         if mtime != self._last_mtime:
@@ -1441,7 +1309,7 @@ class HotNoteIndicator:
         for child in self._menu.get_children():
             self._menu.remove(child)
 
-        notes = load_hotnotes()
+        notes = load_notes()
         items = pending(notes)
 
         if items:
