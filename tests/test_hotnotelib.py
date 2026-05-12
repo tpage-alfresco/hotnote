@@ -1,0 +1,152 @@
+"""Unit tests for hotnotelib — pure helpers only, no I/O or GTK."""
+
+import sys
+import os
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
+
+import hotnotelib as hn
+
+
+# ── parse_recur ──────────────────────────────────────────────────────────────
+
+
+class TestParseRecur:
+    def test_days(self):
+        assert hn.parse_recur("18d") == {"every": 18, "unit": "days"}
+
+    def test_weeks(self):
+        assert hn.parse_recur("2w") == {"every": 2, "unit": "weeks"}
+
+    def test_months(self):
+        assert hn.parse_recur("1m") == {"every": 1, "unit": "months"}
+
+    def test_uppercase(self):
+        assert hn.parse_recur("3W") == {"every": 3, "unit": "weeks"}
+
+    def test_whitespace_stripped(self):
+        assert hn.parse_recur("  5d  ") == {"every": 5, "unit": "days"}
+
+    def test_none_string(self):
+        assert hn.parse_recur("none") is None
+
+    def test_none_string_uppercase(self):
+        assert hn.parse_recur("None") is None
+
+    def test_invalid_unit(self):
+        assert hn.parse_recur("3x") is None
+
+    def test_missing_number(self):
+        assert hn.parse_recur("d") is None
+
+    def test_empty(self):
+        assert hn.parse_recur("") is None
+
+
+# ── domain_from_url ──────────────────────────────────────────────────────────
+
+
+class TestDomainFromUrl:
+    def test_simple(self):
+        assert hn.domain_from_url("https://example.com/page") == "example.com"
+
+    def test_strips_www(self):
+        assert hn.domain_from_url("https://www.github.com/repo") == "github.com"
+
+    def test_with_port(self):
+        assert hn.domain_from_url("http://localhost:8080/path") == "localhost"
+
+    def test_non_url_fallback(self):
+        result = hn.domain_from_url("not-a-url")
+        assert isinstance(result, str)
+
+
+# ── sort_key / pending / completed ───────────────────────────────────────────
+
+
+def _note(id="aaa", importance="medium", urgency="soon", status="pending", **kw):
+    n = {"id": id, "importance": importance, "urgency": urgency, "status": status}
+    n.update(kw)
+    return n
+
+
+class TestSortKey:
+    def test_critical_immediate_first(self):
+        high = _note(importance="critical", urgency="immediate")
+        low = _note(importance="low", urgency="whenever")
+        assert hn.sort_key(high) < hn.sort_key(low)
+
+    def test_same_importance_sorted_by_urgency(self):
+        soon = _note(importance="high", urgency="soon")
+        whenever = _note(importance="high", urgency="whenever")
+        assert hn.sort_key(soon) < hn.sort_key(whenever)
+
+
+class TestPendingAndCompleted:
+    def test_pending_excludes_done(self):
+        notes = [_note(id="1"), _note(id="2", status="done")]
+        result = hn.pending(notes)
+        assert len(result) == 1
+        assert result[0]["id"] == "1"
+
+    def test_completed_only_done(self):
+        notes = [_note(id="1"), _note(id="2", status="done", completed="2025-01-01")]
+        result = hn.completed(notes)
+        assert len(result) == 1
+        assert result[0]["id"] == "2"
+
+    def test_pending_sorted_by_priority(self):
+        low = _note(id="low", importance="low", urgency="whenever")
+        high = _note(id="high", importance="critical", urgency="immediate")
+        result = hn.pending([low, high])
+        assert result[0]["id"] == "high"
+        assert result[1]["id"] == "low"
+
+
+# ── find_note ────────────────────────────────────────────────────────────────
+
+
+class TestFindNote:
+    def test_found(self):
+        notes = [_note(id="abc"), _note(id="def")]
+        assert hn.find_note(notes, "def")["id"] == "def"
+
+    def test_not_found(self):
+        assert hn.find_note([_note(id="abc")], "zzz") is None
+
+
+# ── fmt_recur_short ──────────────────────────────────────────────────────────
+
+
+class TestFmtRecurShort:
+    def test_days(self):
+        note = _note(recur={"every": 18, "unit": "days"})
+        assert hn.fmt_recur_short(note) == "↻18d"
+
+    def test_weeks(self):
+        note = _note(recur={"every": 2, "unit": "weeks"})
+        assert hn.fmt_recur_short(note) == "↻2w"
+
+    def test_months(self):
+        note = _note(recur={"every": 1, "unit": "months"})
+        assert hn.fmt_recur_short(note) == "↻1mo"
+
+    def test_no_recurrence(self):
+        assert hn.fmt_recur_short(_note()) == ""
+
+
+# ── advance_next_due ─────────────────────────────────────────────────────────
+
+
+class TestAdvanceNextDue:
+    def test_advance_days(self):
+        result = hn.advance_next_due("2025-06-01T00:00:00Z", {"every": 5, "unit": "days"})
+        assert result == "2025-06-06T00:00:00Z"
+
+    def test_advance_weeks(self):
+        result = hn.advance_next_due("2025-06-01T00:00:00Z", {"every": 2, "unit": "weeks"})
+        assert result == "2025-06-15T00:00:00Z"
+
+    def test_advance_months(self):
+        result = hn.advance_next_due("2025-01-31T00:00:00Z", {"every": 1, "unit": "months"})
+        assert result == "2025-02-28T00:00:00Z"
