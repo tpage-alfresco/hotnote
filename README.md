@@ -89,4 +89,3 @@ Defaults: `--importance medium --urgency soon`
 - Settings are stored in `~/.config/hotnote/config.json`
 
 Back up these files to preserve your hotnotes and preferences.
-

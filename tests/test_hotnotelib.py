@@ -7,7 +7,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 
 import hotnotelib as hn
 
-
 # ── parse_recur ──────────────────────────────────────────────────────────────
 
 
@@ -140,13 +139,19 @@ class TestFmtRecurShort:
 
 class TestAdvanceNextDue:
     def test_advance_days(self):
-        result = hn.advance_next_due("2025-06-01T00:00:00Z", {"every": 5, "unit": "days"})
+        result = hn.advance_next_due(
+            "2025-06-01T00:00:00Z", {"every": 5, "unit": "days"}
+        )
         assert result == "2025-06-06T00:00:00Z"
 
     def test_advance_weeks(self):
-        result = hn.advance_next_due("2025-06-01T00:00:00Z", {"every": 2, "unit": "weeks"})
+        result = hn.advance_next_due(
+            "2025-06-01T00:00:00Z", {"every": 2, "unit": "weeks"}
+        )
         assert result == "2025-06-15T00:00:00Z"
 
     def test_advance_months(self):
-        result = hn.advance_next_due("2025-01-31T00:00:00Z", {"every": 1, "unit": "months"})
+        result = hn.advance_next_due(
+            "2025-01-31T00:00:00Z", {"every": 1, "unit": "months"}
+        )
         assert result == "2025-02-28T00:00:00Z"

@@ -4,7 +4,9 @@
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib")
+)
 sys.path.insert(0, os.path.expanduser("~/.local/share/hotnote/lib"))
 
 import argparse
@@ -28,7 +30,6 @@ from hotnotelib import (
     sort_key,
 )
 
-
 # ── Formatting ────────────────────────────────────────────────────────────────
 
 
@@ -39,7 +40,9 @@ def fmt_note(note: dict, show_links: bool = False) -> str:
     done_marker = "✓" if status == "done" else " "
     recur = fmt_recur_short(note)
     recur_str = f" {recur}" if recur else ""
-    line = f"[{done_marker}] {note['id']}  {imp:<8} {urg:<9}  {note['summary']}{recur_str}"
+    line = (
+        f"[{done_marker}] {note['id']}  {imp:<8} {urg:<9}  {note['summary']}{recur_str}"
+    )
     if note.get("completed"):
         line += f"  (done {note['completed'][:10]})"
     if show_links and note.get("links"):
@@ -56,9 +59,13 @@ def fmt_note(note: dict, show_links: bool = False) -> str:
 
 def cmd_add(args) -> None:
     if args.importance not in IMPORTANCE_VALUES:
-        sys.exit(f"Invalid importance '{args.importance}'. Choose: {', '.join(IMPORTANCE_VALUES)}")
+        sys.exit(
+            f"Invalid importance '{args.importance}'. Choose: {', '.join(IMPORTANCE_VALUES)}"
+        )
     if args.urgency not in URGENCY_VALUES:
-        sys.exit(f"Invalid urgency '{args.urgency}'. Choose: {', '.join(URGENCY_VALUES)}")
+        sys.exit(
+            f"Invalid urgency '{args.urgency}'. Choose: {', '.join(URGENCY_VALUES)}"
+        )
     data = load_data()
     uid = new_id(data["hotnotes"])
     note = {
@@ -75,7 +82,9 @@ def cmd_add(args) -> None:
     if args.recur:
         recur = parse_recur(args.recur)
         if not recur:
-            sys.exit(f"Invalid recurrence '{args.recur}'. Use e.g. 18d, 2w, 1m, or 'none'.")
+            sys.exit(
+                f"Invalid recurrence '{args.recur}'. Use e.g. 18d, 2w, 1m, or 'none'."
+            )
         note["recur"] = recur
         first = args.first_due or datetime.now(timezone.utc).strftime("%Y-%m-%d")
         note["first_due"] = first
@@ -228,15 +237,21 @@ def main() -> None:
 
     p_add = sub.add_parser("add", help="Add a new hotnote")
     p_add.add_argument("summary")
-    p_add.add_argument("-i", "--importance", default="medium", choices=IMPORTANCE_VALUES)
+    p_add.add_argument(
+        "-i", "--importance", default="medium", choices=IMPORTANCE_VALUES
+    )
     p_add.add_argument("-u", "--urgency", default="soon", choices=URGENCY_VALUES)
     p_add.add_argument("-r", "--recur", help="Recurrence interval: e.g. 18d, 2w, 1m")
-    p_add.add_argument("-d", "--first-due", help="First due date (YYYY-MM-DD, defaults to today)")
+    p_add.add_argument(
+        "-d", "--first-due", help="First due date (YYYY-MM-DD, defaults to today)"
+    )
     p_add.set_defaults(func=cmd_add)
 
     p_list = sub.add_parser("list", help="List hotnotes")
     p_list.add_argument("-a", "--all", action="store_true", help="Include completed")
-    p_list.add_argument("-l", "--links", action="store_true", help="Show linked references")
+    p_list.add_argument(
+        "-l", "--links", action="store_true", help="Show linked references"
+    )
     p_list.set_defaults(func=cmd_list)
 
     p_done = sub.add_parser("done", help="Mark a hotnote as completed")
@@ -257,7 +272,9 @@ def main() -> None:
     p_set.add_argument("-u", "--urgency", choices=URGENCY_VALUES)
     p_set.add_argument("-s", "--summary")
     p_set.add_argument("-n", "--details", help="Set the details/notes text")
-    p_set.add_argument("-r", "--recur", help="Recurrence: e.g. 18d, 2w, 1m, or 'none' to remove")
+    p_set.add_argument(
+        "-r", "--recur", help="Recurrence: e.g. 18d, 2w, 1m, or 'none' to remove"
+    )
     p_set.add_argument("-d", "--first-due", help="First due date (YYYY-MM-DD)")
     p_set.set_defaults(func=cmd_set)
 

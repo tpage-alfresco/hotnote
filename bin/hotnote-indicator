@@ -4,7 +4,9 @@
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib")
+)
 sys.path.insert(0, os.path.expanduser("~/.local/share/hotnote/lib"))
 
 import argparse
@@ -110,7 +112,9 @@ def _show_notification(title: str, body: str) -> None:
 
 def colored_label(text: str, color: str) -> Gtk.Label:
     lbl = Gtk.Label()
-    lbl.set_markup(f'<span foreground="{color}" weight="bold">{GLib.markup_escape_text(text)}</span>')
+    lbl.set_markup(
+        f'<span foreground="{color}" weight="bold">{GLib.markup_escape_text(text)}</span>'
+    )
     return lbl
 
 
@@ -227,6 +231,7 @@ Gtk.StyleContext.add_provider_for_screen(
 
 # ── Link rendering helpers ────────────────────────────────────────────────────
 
+
 def _link_icon_and_label(lnk: dict) -> tuple[str, str]:
     """Return (icon_emoji, display_title) for a link."""
     if lnk["type"] == "ref":
@@ -250,6 +255,7 @@ def _make_link_button(lnk: dict) -> Gtk.Button:
 
 # ── Detail Dialog ─────────────────────────────────────────────────────────────
 
+
 class DetailDialog(Gtk.Dialog):
     """Shows full note details with view/edit modes."""
 
@@ -260,7 +266,9 @@ class DetailDialog(Gtk.Dialog):
         note = self._load_note()
         if not note:
             super().__init__(title="Not Found", transient_for=parent, modal=True)
-            self.get_content_area().pack_start(Gtk.Label(label="Note not found."), True, True, 20)
+            self.get_content_area().pack_start(
+                Gtk.Label(label="Note not found."), True, True, 20
+            )
             self.add_button(Gtk.STOCK_CLOSE, Gtk.ResponseType.CLOSE)
             self.show_all()
             return
@@ -336,24 +344,38 @@ class DetailDialog(Gtk.Dialog):
         imp = note.get("importance", "medium")
         urg = note.get("urgency", "soon")
         meta_grid.attach(Gtk.Label(label="Importance:", xalign=0), 0, 0, 1, 1)
-        meta_grid.attach(colored_label(imp, IMPORTANCE_COLORS.get(imp, "#ccc")), 1, 0, 1, 1)
+        meta_grid.attach(
+            colored_label(imp, IMPORTANCE_COLORS.get(imp, "#ccc")), 1, 0, 1, 1
+        )
         meta_grid.attach(Gtk.Label(label="Urgency:", xalign=0), 0, 1, 1, 1)
-        meta_grid.attach(colored_label(urg, URGENCY_COLORS.get(urg, "#ccc")), 1, 1, 1, 1)
+        meta_grid.attach(
+            colored_label(urg, URGENCY_COLORS.get(urg, "#ccc")), 1, 1, 1, 1
+        )
         meta_grid.attach(Gtk.Label(label="Created:", xalign=0), 0, 2, 1, 1)
-        meta_grid.attach(Gtk.Label(label=note.get("created", "—")[:10], xalign=0), 1, 2, 1, 1)
+        meta_grid.attach(
+            Gtk.Label(label=note.get("created", "—")[:10], xalign=0), 1, 2, 1, 1
+        )
 
         recur = note.get("recur")
         if recur:
             recur_text = fmt_recur_short(note)
             next_due = note.get("next_due", "")[:10]
             meta_grid.attach(Gtk.Label(label="Recurrence:", xalign=0), 0, 3, 1, 1)
-            meta_grid.attach(Gtk.Label(label=f"{recur_text}  (next: {next_due})", xalign=0), 1, 3, 1, 1)
+            meta_grid.attach(
+                Gtk.Label(label=f"{recur_text}  (next: {next_due})", xalign=0),
+                1,
+                3,
+                1,
+                1,
+            )
 
         # Details/notes field
         details_text = note.get("details", "")
         if details_text:
             det_title = Gtk.Label()
-            det_title.set_markup('<span foreground="#ff6d00" weight="bold">Notes</span>')
+            det_title.set_markup(
+                '<span foreground="#ff6d00" weight="bold">Notes</span>'
+            )
             det_title.set_xalign(0)
             body.pack_start(det_title, False, False, 0)
 
@@ -366,7 +388,9 @@ class DetailDialog(Gtk.Dialog):
         # Links section
         links = note.get("links", [])
         link_title = Gtk.Label()
-        link_title.set_markup(f'<span foreground="#ff6d00" weight="bold">Links ({len(links)})</span>')
+        link_title.set_markup(
+            f'<span foreground="#ff6d00" weight="bold">Links ({len(links)})</span>'
+        )
         link_title.set_xalign(0)
         body.pack_start(link_title, False, False, 0)
 
@@ -446,7 +470,9 @@ class DetailDialog(Gtk.Dialog):
         for v in IMPORTANCE_VALUES:
             self._edit_imp.append_text(v)
         cur_imp = note.get("importance", "medium")
-        self._edit_imp.set_active(IMPORTANCE_VALUES.index(cur_imp) if cur_imp in IMPORTANCE_VALUES else 2)
+        self._edit_imp.set_active(
+            IMPORTANCE_VALUES.index(cur_imp) if cur_imp in IMPORTANCE_VALUES else 2
+        )
         level_box.pack_start(self._edit_imp, False, False, 0)
 
         level_box.pack_start(Gtk.Label(label="Urgency:"), False, False, 0)
@@ -454,7 +480,9 @@ class DetailDialog(Gtk.Dialog):
         for v in URGENCY_VALUES:
             self._edit_urg.append_text(v)
         cur_urg = note.get("urgency", "soon")
-        self._edit_urg.set_active(URGENCY_VALUES.index(cur_urg) if cur_urg in URGENCY_VALUES else 1)
+        self._edit_urg.set_active(
+            URGENCY_VALUES.index(cur_urg) if cur_urg in URGENCY_VALUES else 1
+        )
         level_box.pack_start(self._edit_urg, False, False, 0)
 
         recur_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
@@ -464,7 +492,9 @@ class DetailDialog(Gtk.Dialog):
         self._edit_recur = Gtk.Entry()
         self._edit_recur.set_width_chars(8)
         self._edit_recur.set_placeholder_text("e.g. 7d")
-        self._edit_recur.set_tooltip_text("18d, 2w, 1m — or leave empty for no recurrence")
+        self._edit_recur.set_tooltip_text(
+            "18d, 2w, 1m — or leave empty for no recurrence"
+        )
         cur_recur = note.get("recur")
         if cur_recur:
             short = {"days": "d", "weeks": "w", "months": "m"}[cur_recur["unit"]]
@@ -552,7 +582,9 @@ class DetailDialog(Gtk.Dialog):
             self._links_box.pack_start(row, False, False, 0)
 
         if not self._edit_links:
-            self._links_box.pack_start(Gtk.Label(label="No links.", xalign=0), False, False, 0)
+            self._links_box.pack_start(
+                Gtk.Label(label="No links.", xalign=0), False, False, 0
+            )
 
         self._links_box.show_all()
 
@@ -587,7 +619,9 @@ class DetailDialog(Gtk.Dialog):
                 if is_url:
                     if not title:
                         title = fetch_page_title(value)
-                    self._edit_links.append({"type": "url", "url": value, "title": title})
+                    self._edit_links.append(
+                        {"type": "url", "url": value, "title": title}
+                    )
                 else:
                     self._edit_links.append({"type": "ref", "text": value})
                 self._rebuild_links_list()
@@ -609,7 +643,11 @@ class DetailDialog(Gtk.Dialog):
                 if is_url:
                     if not title:
                         title = fetch_page_title(value)
-                    self._edit_links[idx] = {"type": "url", "url": value, "title": title}
+                    self._edit_links[idx] = {
+                        "type": "url",
+                        "url": value,
+                        "title": title,
+                    }
                 else:
                     self._edit_links[idx] = {"type": "ref", "text": value}
                 self._rebuild_links_list()
@@ -618,11 +656,15 @@ class DetailDialog(Gtk.Dialog):
         del self._edit_links[idx]
         self._rebuild_links_list()
 
-    def _link_entry_dialog(self, title: str, pre_value: str, pre_title: str) -> tuple | None:
+    def _link_entry_dialog(
+        self, title: str, pre_value: str, pre_title: str
+    ) -> tuple | None:
         dialog = Gtk.Dialog(title=title, transient_for=self, modal=True)
         dialog.add_buttons(
-            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
-            Gtk.STOCK_OK, Gtk.ResponseType.OK,
+            Gtk.STOCK_CANCEL,
+            Gtk.ResponseType.CANCEL,
+            Gtk.STOCK_OK,
+            Gtk.ResponseType.OK,
         )
         dialog.set_default_size(420, -1)
         dialog.set_default_response(Gtk.ResponseType.OK)
@@ -714,6 +756,7 @@ class DetailDialog(Gtk.Dialog):
 
 # ── GTK Window ────────────────────────────────────────────────────────────────
 
+
 class HotNoteWindow(Gtk.Window):
     def __init__(self):
         super().__init__(title="HotNote 🔥")
@@ -731,7 +774,9 @@ class HotNoteWindow(Gtk.Window):
         header_box.get_style_context().add_class("hotnote-header")
         header_box.set_border_width(8)
         title_lbl = Gtk.Label()
-        title_lbl.set_markup('<span foreground="#ff6d00" size="x-large" weight="bold">🔥 HotNote</span>')
+        title_lbl.set_markup(
+            '<span foreground="#ff6d00" size="x-large" weight="bold">🔥 HotNote</span>'
+        )
         title_lbl.set_xalign(0)
         header_box.pack_start(title_lbl, True, True, 0)
 
@@ -853,7 +898,7 @@ class HotNoteWindow(Gtk.Window):
         summary_btn.set_relief(Gtk.ReliefStyle.NONE)
         summary_lbl = Gtk.Label()
         escaped = GLib.markup_escape_text(note["summary"])
-        summary_lbl.set_markup(f'<b><big>{escaped}</big></b>')
+        summary_lbl.set_markup(f"<b><big>{escaped}</big></b>")
         summary_lbl.set_xalign(0)
         summary_lbl.set_ellipsize(Pango.EllipsizeMode.END)
         summary_lbl.set_max_width_chars(45)
@@ -876,7 +921,9 @@ class HotNoteWindow(Gtk.Window):
         recur_text = fmt_recur_short(note)
         if recur_text:
             recur_lbl = Gtk.Label()
-            recur_lbl.set_markup(f'<span foreground="#64b5f6" weight="bold">{recur_text}</span>')
+            recur_lbl.set_markup(
+                f'<span foreground="#64b5f6" weight="bold">{recur_text}</span>'
+            )
             recur_lbl.set_tooltip_text(f"Next due: {note.get('next_due', '?')[:10]}")
             top.pack_start(recur_lbl, False, False, 0)
 
@@ -906,7 +953,9 @@ class HotNoteWindow(Gtk.Window):
         add_link_btn.connect("clicked", self._on_add_link, note["id"])
         link_row.pack_end(add_link_btn, False, False, 4)
 
-        outer.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
+        outer.pack_start(
+            Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0
+        )
         return row
 
     def _make_done_row(self, note: dict) -> Gtk.ListBoxRow:
@@ -924,7 +973,9 @@ class HotNoteWindow(Gtk.Window):
 
         summary_lbl = Gtk.Label()
         escaped = GLib.markup_escape_text(note["summary"])
-        summary_lbl.set_markup(f'<big><s><span foreground="#888888">{escaped}</span></s></big>')
+        summary_lbl.set_markup(
+            f'<big><s><span foreground="#888888">{escaped}</span></s></big>'
+        )
         summary_lbl.set_xalign(0)
         summary_lbl.set_hexpand(True)
         summary_lbl.set_ellipsize(Pango.EllipsizeMode.END)
@@ -957,7 +1008,9 @@ class HotNoteWindow(Gtk.Window):
             for lnk in links:
                 link_flow.add(_make_link_button(lnk))
 
-        outer.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
+        outer.pack_start(
+            Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0
+        )
         return row
 
     # ── Actions ───────────────────────────────────────────────────────────────
@@ -988,7 +1041,9 @@ class HotNoteWindow(Gtk.Window):
         if self.recur_toggle.get_active():
             self.recur_row.set_no_show_all(False)
             self.recur_row.show_all()
-            self.first_due_entry.set_text(datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+            self.first_due_entry.set_text(
+                datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            )
         else:
             self.recur_row.set_no_show_all(True)
             self.recur_row.hide()
@@ -1084,7 +1139,8 @@ class HotNoteWindow(Gtk.Window):
                 re.compile(text)
             except re.error as e:
                 err_dlg = Gtk.MessageDialog(
-                    transient_for=dlg, modal=True,
+                    transient_for=dlg,
+                    modal=True,
                     message_type=Gtk.MessageType.ERROR,
                     buttons=Gtk.ButtonsType.OK,
                     text=f"Invalid regex: {e}",
@@ -1176,8 +1232,10 @@ class HotNoteWindow(Gtk.Window):
             destroy_with_parent=True,
         )
         dialog.add_buttons(
-            Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
-            Gtk.STOCK_OK, Gtk.ResponseType.OK,
+            Gtk.STOCK_CANCEL,
+            Gtk.ResponseType.CANCEL,
+            Gtk.STOCK_OK,
+            Gtk.ResponseType.OK,
         )
         dialog.set_default_size(450, -1)
         dialog.set_default_response(Gtk.ResponseType.OK)
@@ -1220,13 +1278,20 @@ class HotNoteWindow(Gtk.Window):
                         if is_url:
                             if not title:
                                 title = fetch_page_title(value)
-                            t.setdefault("links", []).append({
-                                "type": "url", "url": value, "title": title,
-                            })
+                            t.setdefault("links", []).append(
+                                {
+                                    "type": "url",
+                                    "url": value,
+                                    "title": title,
+                                }
+                            )
                         else:
-                            t.setdefault("links", []).append({
-                                "type": "ref", "text": value,
-                            })
+                            t.setdefault("links", []).append(
+                                {
+                                    "type": "ref",
+                                    "text": value,
+                                }
+                            )
                         break
                 save_notes(notes)
                 self.refresh()
@@ -1256,6 +1321,7 @@ class HotNoteWindow(Gtk.Window):
 
 
 # ── AppIndicator ──────────────────────────────────────────────────────────────
+
 
 class HotNoteIndicator:
     def __init__(self):
@@ -1318,7 +1384,7 @@ class HotNoteIndicator:
                 urg = note.get("urgency", "soon")
                 summary = note["summary"]
                 if len(summary) > MENU_MAX_CHARS:
-                    summary = summary[:MENU_MAX_CHARS - 1] + "…"
+                    summary = summary[: MENU_MAX_CHARS - 1] + "…"
                 summary = summary.ljust(MENU_MAX_CHARS)
                 imp_icon = IMPORTANCE_ICON.get(imp, "")
                 urg_icon = URGENCY_ICON.get(urg, "")
@@ -1372,6 +1438,7 @@ class HotNoteIndicator:
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="hotnote-indicator")

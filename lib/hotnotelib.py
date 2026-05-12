@@ -124,6 +124,7 @@ def is_useless_title(title: str) -> bool:
 
 def domain_from_url(url: str) -> str:
     from urllib.parse import urlparse
+
     host = urlparse(url).hostname or url
     return host.removeprefix("www.")
 
@@ -131,13 +132,17 @@ def domain_from_url(url: str) -> str:
 def fetch_page_title(url: str) -> str:
     """Fetch the <title> of a URL. Falls back to the domain name."""
     from urllib.request import Request, urlopen
+
     try:
         req = Request(url, headers={"User-Agent": "Mozilla/5.0 (HotNote)"})
         with urlopen(req, timeout=5) as resp:
             chunk = resp.read(65536).decode("utf-8", errors="ignore")
-        match = re.search(r"<title[^>]*>(.*?)</title>", chunk, re.IGNORECASE | re.DOTALL)
+        match = re.search(
+            r"<title[^>]*>(.*?)</title>", chunk, re.IGNORECASE | re.DOTALL
+        )
         if match:
             import html
+
             title = html.unescape(match.group(1)).strip()
             if not is_useless_title(title):
                 return title
@@ -168,6 +173,7 @@ def parse_recur(spec: str) -> dict | None:
 def advance_next_due(prev_due: str, recur: dict) -> str:
     """Advance a next_due ISO string by one recurrence interval."""
     from dateutil.relativedelta import relativedelta
+
     dt = datetime.fromisoformat(prev_due.replace("Z", "+00:00"))
     unit = recur["unit"]
     every = recur["every"]

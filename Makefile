@@ -7,7 +7,7 @@ AUTODIR  = $(HOME)/.config/autostart
 HNDATA   = $(DATADIR)/hotnote
 LIBDIR   = $(DATADIR)/hotnote/lib
 
-.PHONY: install uninstall
+.PHONY: install uninstall test
 
 install:
 	@echo "Installing HotNote to $(PREFIX) …"
@@ -39,3 +39,7 @@ uninstall:
 		gtk-update-icon-cache -f -t $(DATADIR)/icons/hicolor 2>/dev/null || true; \
 	fi
 	@echo "Done."
+
+test:
+	pip3 install -r requirements.txt
+	python3 -m pytest tests/ -v

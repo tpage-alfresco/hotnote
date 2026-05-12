@@ -1,0 +1,18 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c # v6.0.0  # pragma: allowlist secret
+    hooks:
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+
+  - repo: https://github.com/psf/black
+    rev: c6755bb741b6481d6b3d3bb563c83fa060db96c9 # 26.3.1  # pragma: allowlist secret
+    hooks:
+      - id: black
+
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: 01886c8a910c64595c47f186ca1ffc0b77fa5458 # v1.5.0  # pragma: allowlist secret
+    hooks:
+      - id: detect-secrets
+        args: [--baseline, .secrets.baseline]
