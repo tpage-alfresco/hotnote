@@ -115,7 +115,7 @@ def is_useless_title(title: str) -> bool:
     lower = title.lower()
     for pattern in cfg.get("useless_title_patterns", []):
         try:
-            if re.fullmatch(pattern, lower):
+            if re.fullmatch(pattern.lower(), lower):
                 return True
         except re.error:
             continue
