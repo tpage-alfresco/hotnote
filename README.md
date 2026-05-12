@@ -2,12 +2,15 @@
 
 A lightweight personal task tracker for Ubuntu with a system tray indicator and a GTK window — all driven by a single JSON file and a CLI.
 
+![HotNote screenshot](docs/screenshot.png)
+
 ## Features
 
 - **System tray indicator** — see pending hotnotes at a glance from the top bar
 - **GTK window** — full view with add/done/reopen/delete, importance & urgency badges
+- **Scheduled notes** — set a future date for a note to appear; it stays out of the way until then
+- **Recurring notes** — set a repeat interval (days/weeks/months); completed notes move to scheduled and reappear when due
 - **CLI** — scriptable `hotnote` command for adding, listing, and managing notes
-- **Recurring notes** — set a repeat interval (days/weeks/months); completed notes resurrect automatically when due
 - **Links & references** — attach URLs (opened in browser) or text references (copied to clipboard) to any hotnote
 - **Hot theming** — warm fire-inspired colour scheme throughout
 
@@ -42,15 +45,17 @@ make uninstall
 ## CLI Usage
 
 ```
-hotnote add "Buy milk" --importance low --urgency whenever
-hotnote add "Fix auth bug" --importance critical --urgency immediate
-hotnote add "Monthly report" --recur 1m --importance high
+hotnote add "Apply SPF 50 — dangerously hot today" --importance critical --urgency immediate
+hotnote add "Rehydrate — too hot to function" --recur 2d --importance medium
+hotnote add "Book photoshoot — the world deserves this" --appear 2026-06-01 --importance high
 hotnote list
+hotnote list --scheduled
 hotnote list --all --links
 hotnote done <id>
 hotnote reopen <id>
 hotnote set <id> --importance high --urgency soon
 hotnote set <id> --recur none
+hotnote set <id> --appear 2026-07-01
 hotnote link <id> https://github.com/issue/123 "Auth issue"
 hotnote link <id> "check the deploy logs on staging"
 hotnote show <id>
@@ -63,9 +68,23 @@ hotnote open
 - **URL** — any value starting with `http://` or `https://` becomes a clickable web link (opened with `xdg-open`)
 - **Text reference** — anything else becomes a reference that copies to clipboard when clicked
 
+### Scheduling
+
+Add `--appear` to schedule a note for a future date. It stays in the Scheduled tab until that date, then automatically moves to Pending.
+
+```
+hotnote add "Renew modelling insurance" --appear 2026-06-01
+```
+
+Combine with `--recur` for a recurring note that first appears on a specific date:
+
+```
+hotnote add "Skincare routine check-in" --appear 2026-05-16 --recur 2w
+```
+
 ### Recurrence
 
-Add `--recur` to make a hotnote repeat. When completed, it stays done until the next due date, then automatically reappears as pending.
+Add `--recur` to make a hotnote repeat. When completed, it moves to scheduled until the next due date, then automatically reappears as pending.
 
 | Spec | Meaning |
 |---|---|
@@ -82,6 +101,12 @@ Add `--recur` to make a hotnote repeat. When completed, it stays done until the 
 | urgency | `immediate`, `soon`, `whenever` |
 
 Defaults: `--importance medium --urgency soon`
+
+## Tests
+
+```bash
+make test
+```
 
 ## Data
 
