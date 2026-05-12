@@ -23,14 +23,17 @@ from hotnotelib import (
     advance_next_due,
     completed,
     fetch_page_title,
+    fmt_appear_short,
     fmt_recur_short,
     load_config,
     load_notes,
     new_id,
     now_iso,
+    parse_appear_date,
     parse_recur,
     pending,
-    recur_resurrect,
+    scheduled,
+    scheduled_activate,
     save_config,
     save_notes,
     sort_key,
@@ -356,18 +359,31 @@ class DetailDialog(Gtk.Dialog):
             Gtk.Label(label=note.get("created", "—")[:10], xalign=0), 1, 2, 1, 1
         )
 
+        meta_row = 3
+        appear = note.get("appear_date")
+        if appear:
+            appear_text = fmt_appear_short(note)
+            meta_grid.attach(Gtk.Label(label="Appears:", xalign=0), 0, meta_row, 1, 1)
+            meta_grid.attach(
+                colored_label(appear_text, "#64b5f6"), 1, meta_row, 1, 1
+            )
+            meta_row += 1
+
         recur = note.get("recur")
         if recur:
             recur_text = fmt_recur_short(note)
             next_due = note.get("next_due", "")[:10]
-            meta_grid.attach(Gtk.Label(label="Recurrence:", xalign=0), 0, 3, 1, 1)
+            meta_grid.attach(
+                Gtk.Label(label="Recurrence:", xalign=0), 0, meta_row, 1, 1
+            )
             meta_grid.attach(
                 Gtk.Label(label=f"{recur_text}  (next: {next_due})", xalign=0),
                 1,
-                3,
+                meta_row,
                 1,
                 1,
             )
+            meta_row += 1
 
         # Details/notes field
         details_text = note.get("details", "")
@@ -485,13 +501,31 @@ class DetailDialog(Gtk.Dialog):
         )
         level_box.pack_start(self._edit_urg, False, False, 0)
 
-        recur_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        body.pack_start(recur_box, False, False, 0)
+        sched_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        body.pack_start(sched_box, False, False, 0)
 
-        recur_box.pack_start(Gtk.Label(label="Recur every:"), False, False, 0)
+        sched_box.pack_start(Gtk.Label(label="Appear on:"), False, False, 0)
+        self._edit_appear = Gtk.Entry()
+        self._edit_appear.set_width_chars(12)
+        self._edit_appear.set_placeholder_text("YYYY-MM-DD")
+        self._edit_appear.set_tooltip_text(
+            "Date this note becomes visible (leave empty for immediate)"
+        )
+        self._edit_appear.set_text(note.get("appear_date") or "")
+        sched_box.pack_start(self._edit_appear, False, False, 0)
+
+        edit_cal_btn = Gtk.Button(label="📅")
+        edit_cal_btn.set_relief(Gtk.ReliefStyle.NONE)
+        edit_cal_btn.set_tooltip_text("Pick date")
+        edit_cal_btn.connect("clicked", self._on_pick_appear_cal)
+        sched_box.pack_start(edit_cal_btn, False, False, 0)
+
+        sched_box.pack_start(
+            Gtk.Label(label="Repeat every:"), False, False, 8
+        )
         self._edit_recur = Gtk.Entry()
         self._edit_recur.set_width_chars(8)
-        self._edit_recur.set_placeholder_text("e.g. 7d")
+        self._edit_recur.set_placeholder_text("optional, e.g. 7d")
         self._edit_recur.set_tooltip_text(
             "18d, 2w, 1m — or leave empty for no recurrence"
         )
@@ -499,20 +533,7 @@ class DetailDialog(Gtk.Dialog):
         if cur_recur:
             short = {"days": "d", "weeks": "w", "months": "m"}[cur_recur["unit"]]
             self._edit_recur.set_text(f"{cur_recur['every']}{short}")
-        recur_box.pack_start(self._edit_recur, False, False, 0)
-
-        recur_box.pack_start(Gtk.Label(label="First due:"), False, False, 0)
-        self._edit_first_due = Gtk.Entry()
-        self._edit_first_due.set_width_chars(12)
-        self._edit_first_due.set_placeholder_text("YYYY-MM-DD")
-        self._edit_first_due.set_text(note.get("first_due", ""))
-        recur_box.pack_start(self._edit_first_due, False, False, 0)
-
-        edit_cal_btn = Gtk.Button(label="📅")
-        edit_cal_btn.set_relief(Gtk.ReliefStyle.NONE)
-        edit_cal_btn.set_tooltip_text("Pick a date")
-        edit_cal_btn.connect("clicked", self._on_pick_first_due_cal)
-        recur_box.pack_start(edit_cal_btn, False, False, 0)
+        sched_box.pack_start(self._edit_recur, False, False, 0)
 
         # Links section with CRUD
         link_header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -588,11 +609,11 @@ class DetailDialog(Gtk.Dialog):
 
         self._links_box.show_all()
 
-    def _on_pick_first_due_cal(self, _widget) -> None:
+    def _on_pick_appear_cal(self, _widget) -> None:
         popover = Gtk.Popover()
         popover.set_relative_to(_widget)
         cal = Gtk.Calendar()
-        current = self._edit_first_due.get_text().strip()
+        current = self._edit_appear.get_text().strip()
         if current:
             try:
                 dt = datetime.strptime(current, "%Y-%m-%d")
@@ -603,7 +624,7 @@ class DetailDialog(Gtk.Dialog):
 
         def on_day_selected(_cal):
             year, month, day = cal.get_date()
-            self._edit_first_due.set_text(f"{year:04d}-{month + 1:02d}-{day:02d}")
+            self._edit_appear.set_text(f"{year:04d}-{month + 1:02d}-{day:02d}")
             popover.popdown()
 
         cal.connect("day-selected-double-click", on_day_selected)
@@ -717,20 +738,27 @@ class DetailDialog(Gtk.Dialog):
         note["importance"] = IMPORTANCE_VALUES[self._edit_imp.get_active()]
         note["urgency"] = URGENCY_VALUES[self._edit_urg.get_active()]
 
+        appear_spec = self._edit_appear.get_text().strip()
         recur_spec = self._edit_recur.get_text().strip()
+
+        if appear_spec:
+            note["appear_date"] = appear_spec
+            note["status"] = "scheduled"
+        else:
+            if note.get("status") == "scheduled":
+                note["status"] = "pending"
+            note["appear_date"] = None
+
         if recur_spec:
             recur = parse_recur(recur_spec)
             if recur:
                 note["recur"] = recur
-                first = self._edit_first_due.get_text().strip()
-                if first:
-                    note["first_due"] = first
-                    if not note.get("next_due"):
-                        note["next_due"] = f"{first}T00:00:00Z"
-                elif not note.get("next_due"):
-                    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                    note["first_due"] = today
-                    note["next_due"] = f"{today}T00:00:00Z"
+                first = appear_spec or note.get("first_due")
+                if not first:
+                    first = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                note["first_due"] = first
+                if not note.get("next_due"):
+                    note["next_due"] = f"{first}T00:00:00Z"
         else:
             note.pop("recur", None)
             note.pop("next_due", None)
@@ -812,45 +840,50 @@ class HotNoteWindow(Gtk.Window):
         self.urg_combo.set_active(1)
         add_bar.pack_start(self.urg_combo, False, False, 0)
 
-        self.recur_toggle = Gtk.ToggleButton(label="↻")
-        self.recur_toggle.set_tooltip_text("Set up recurrence")
-        self.recur_toggle.set_relief(Gtk.ReliefStyle.NONE)
-        self.recur_toggle.connect("toggled", self._on_recur_toggled)
-        add_bar.pack_start(self.recur_toggle, False, False, 0)
+        self.schedule_toggle = Gtk.ToggleButton(label="📅")
+        self.schedule_toggle.set_tooltip_text("Schedule / recurrence options")
+        self.schedule_toggle.set_relief(Gtk.ReliefStyle.NONE)
+        self.schedule_toggle.connect("toggled", self._on_schedule_toggled)
+        add_bar.pack_start(self.schedule_toggle, False, False, 0)
 
         add_btn = Gtk.Button(label="🔥 Add")
         add_btn.get_style_context().add_class("hotnote-add-btn")
         add_btn.connect("clicked", self._on_add)
         add_bar.pack_start(add_btn, False, False, 0)
 
-        # ── Recurrence row (hidden by default) ────────────────────────────────
-        self.recur_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        self.recur_row.set_border_width(4)
-        self.recur_row.set_margin_start(10)
-        self.recur_row.set_margin_end(10)
-        vbox.pack_start(self.recur_row, False, False, 0)
+        # ── Combined schedule row (hidden by default) ─────────────────────────
+        self.schedule_row = Gtk.Box(
+            orientation=Gtk.Orientation.HORIZONTAL, spacing=6
+        )
+        self.schedule_row.set_border_width(4)
+        self.schedule_row.set_margin_start(10)
+        self.schedule_row.set_margin_end(10)
+        vbox.pack_start(self.schedule_row, False, False, 0)
 
-        self.recur_row.pack_start(Gtk.Label(label="Every:"), False, False, 0)
+        self.schedule_row.pack_start(
+            Gtk.Label(label="Appear on:"), False, False, 0
+        )
+        self.appear_entry = Gtk.Entry()
+        self.appear_entry.set_placeholder_text("YYYY-MM-DD")
+        self.appear_entry.set_width_chars(12)
+        self.schedule_row.pack_start(self.appear_entry, False, False, 0)
+
+        sched_cal_btn = Gtk.Button(label="📅")
+        sched_cal_btn.set_relief(Gtk.ReliefStyle.NONE)
+        sched_cal_btn.set_tooltip_text("Pick date")
+        sched_cal_btn.connect("clicked", self._on_pick_date, self.appear_entry)
+        self.schedule_row.pack_start(sched_cal_btn, False, False, 0)
+
+        self.schedule_row.pack_start(
+            Gtk.Label(label="Repeat every:"), False, False, 8
+        )
         self.recur_entry = Gtk.Entry()
-        self.recur_entry.set_placeholder_text("e.g. 18d, 2w, 1m")
-        self.recur_entry.set_width_chars(10)
-        self.recur_row.pack_start(self.recur_entry, False, False, 0)
+        self.recur_entry.set_placeholder_text("optional, e.g. 18d, 2w")
+        self.recur_entry.set_width_chars(18)
+        self.schedule_row.pack_start(self.recur_entry, False, False, 0)
 
-        self.recur_row.pack_start(Gtk.Label(label="First due:"), False, False, 4)
-        self.first_due_entry = Gtk.Entry()
-        self.first_due_entry.set_placeholder_text("YYYY-MM-DD")
-        self.first_due_entry.set_width_chars(12)
-        self.first_due_entry.set_text(datetime.now(timezone.utc).strftime("%Y-%m-%d"))
-        self.recur_row.pack_start(self.first_due_entry, False, False, 0)
-
-        cal_btn = Gtk.Button(label="📅")
-        cal_btn.set_relief(Gtk.ReliefStyle.NONE)
-        cal_btn.set_tooltip_text("Pick a date")
-        cal_btn.connect("clicked", self._on_pick_date, self.first_due_entry)
-        self.recur_row.pack_start(cal_btn, False, False, 0)
-
-        self.recur_row.set_no_show_all(True)
-        self.recur_row.hide()
+        self.schedule_row.set_no_show_all(True)
+        self.schedule_row.hide()
 
         sep = Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL)
         vbox.pack_start(sep, False, False, 0)
@@ -868,6 +901,16 @@ class HotNoteWindow(Gtk.Window):
         pending_scroll.set_border_width(6)
         pending_scroll.add(self.pending_list_box)
         self.notebook.append_page(pending_scroll, Gtk.Label(label="🔥 Pending"))
+
+        self.scheduled_list_box = Gtk.ListBox()
+        self.scheduled_list_box.set_selection_mode(Gtk.SelectionMode.NONE)
+        scheduled_scroll = Gtk.ScrolledWindow()
+        scheduled_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scheduled_scroll.set_border_width(6)
+        scheduled_scroll.add(self.scheduled_list_box)
+        self.notebook.append_page(
+            scheduled_scroll, Gtk.Label(label="📅 Scheduled")
+        )
 
         self.done_list_box = Gtk.ListBox()
         self.done_list_box.set_selection_mode(Gtk.SelectionMode.NONE)
@@ -1013,6 +1056,64 @@ class HotNoteWindow(Gtk.Window):
         )
         return row
 
+    def _make_scheduled_row(self, note: dict) -> Gtk.ListBoxRow:
+        row = Gtk.ListBoxRow()
+        row.set_selectable(False)
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        row.add(outer)
+
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        vbox.set_border_width(8)
+        outer.pack_start(vbox, False, False, 0)
+
+        hbox = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        vbox.pack_start(hbox, False, False, 0)
+
+        summary_btn = Gtk.Button()
+        summary_btn.set_relief(Gtk.ReliefStyle.NONE)
+        summary_lbl = Gtk.Label()
+        escaped = GLib.markup_escape_text(note["summary"])
+        summary_lbl.set_markup(
+            f'<b><big><span foreground="#64b5f6">{escaped}</span></big></b>'
+        )
+        summary_lbl.set_xalign(0)
+        summary_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+        summary_lbl.set_max_width_chars(45)
+        summary_btn.add(summary_lbl)
+        summary_btn.set_tooltip_text("Click to open details")
+        summary_btn.set_hexpand(True)
+        summary_btn.connect("clicked", self._on_open_detail, note["id"])
+        hbox.pack_start(summary_btn, True, True, 0)
+
+        appear_text = fmt_appear_short(note)
+        if appear_text:
+            appear_lbl = colored_label(f"📅 {appear_text}", "#64b5f6")
+            hbox.pack_start(appear_lbl, False, False, 0)
+
+        recur_text = fmt_recur_short(note)
+        if recur_text:
+            recur_lbl = Gtk.Label()
+            recur_lbl.set_markup(
+                f'<span foreground="#64b5f6" weight="bold">{recur_text}</span>'
+            )
+            hbox.pack_start(recur_lbl, False, False, 0)
+
+        activate_btn = Gtk.Button(label="⚡ Activate now")
+        activate_btn.get_style_context().add_class("done-btn")
+        activate_btn.connect("clicked", self._on_activate_now, note["id"])
+        hbox.pack_start(activate_btn, False, False, 0)
+
+        del_btn = Gtk.Button(label="🗑")
+        del_btn.set_relief(Gtk.ReliefStyle.NONE)
+        del_btn.set_tooltip_text("Delete")
+        del_btn.connect("clicked", self._on_delete, note["id"])
+        hbox.pack_start(del_btn, False, False, 0)
+
+        outer.pack_start(
+            Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0
+        )
+        return row
+
     # ── Actions ───────────────────────────────────────────────────────────────
 
     def _on_pick_date(self, _widget, entry: Gtk.Entry) -> None:
@@ -1037,18 +1138,29 @@ class HotNoteWindow(Gtk.Window):
         popover.add(cal)
         popover.show_all()
 
-    def _on_recur_toggled(self, _widget) -> None:
-        if self.recur_toggle.get_active():
-            self.recur_row.set_no_show_all(False)
-            self.recur_row.show_all()
-            self.first_due_entry.set_text(
-                datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            )
+    def _on_schedule_toggled(self, _widget) -> None:
+        if self.schedule_toggle.get_active():
+            self.schedule_row.set_no_show_all(False)
+            self.schedule_row.show_all()
+            if not self.appear_entry.get_text().strip():
+                self.appear_entry.set_text(
+                    datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                )
         else:
-            self.recur_row.set_no_show_all(True)
-            self.recur_row.hide()
+            self.schedule_row.set_no_show_all(True)
+            self.schedule_row.hide()
+            self.appear_entry.set_text("")
             self.recur_entry.set_text("")
-            self.first_due_entry.set_text("")
+
+    def _on_activate_now(self, _widget, note_id: str) -> None:
+        notes = load_notes()
+        for t in notes:
+            if t["id"] == note_id:
+                t["status"] = "pending"
+                t["appear_date"] = None
+                t["completed"] = None
+        save_notes(notes)
+        self.refresh()
 
     def _on_settings(self, _widget) -> None:
         dlg = Gtk.Dialog(
@@ -1177,41 +1289,54 @@ class HotNoteWindow(Gtk.Window):
         urg = URGENCY_VALUES[self.urg_combo.get_active()]
         notes = load_notes()
         uid = new_id(notes)
+        initial_status = "pending"
+        appear_date = None
+        recur = None
+
+        if self.schedule_toggle.get_active():
+            appear_spec = self.appear_entry.get_text().strip()
+            appear_date = parse_appear_date(appear_spec) if appear_spec else None
+            if appear_date:
+                initial_status = "scheduled"
+            recur_spec = self.recur_entry.get_text().strip()
+            recur = parse_recur(recur_spec) if recur_spec else None
+
         note = {
             "id": uid,
             "summary": text,
             "details": "",
-            "status": "pending",
+            "status": initial_status,
             "importance": imp,
             "urgency": urg,
             "created": now_iso(),
             "completed": None,
+            "appear_date": appear_date,
             "links": [],
         }
-        if self.recur_toggle.get_active():
-            recur_spec = self.recur_entry.get_text().strip()
-            recur = parse_recur(recur_spec) if recur_spec else None
-            if recur:
-                note["recur"] = recur
-                first = self.first_due_entry.get_text().strip()
-                if not first:
-                    first = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                note["first_due"] = first
-                note["next_due"] = f"{first}T00:00:00Z"
+        if recur:
+            note["recur"] = recur
+            first = appear_date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            note["first_due"] = first
+            note["next_due"] = f"{first}T00:00:00Z"
+            if not appear_date:
+                note["status"] = "pending"
         notes.append(note)
         save_notes(notes)
         self.entry.set_text("")
-        self.recur_toggle.set_active(False)
+        self.schedule_toggle.set_active(False)
         self.refresh()
 
     def _on_done(self, _widget, note_id: str) -> None:
         notes = load_notes()
         for t in notes:
             if t["id"] == note_id:
-                t["status"] = "done"
                 t["completed"] = now_iso()
                 if t.get("recur") and t.get("next_due"):
                     t["next_due"] = advance_next_due(t["next_due"], t["recur"])
+                    t["status"] = "scheduled"
+                    t["appear_date"] = t["next_due"][:10]
+                else:
+                    t["status"] = "done"
         save_notes(notes)
         self.refresh()
 
@@ -1307,16 +1432,23 @@ class HotNoteWindow(Gtk.Window):
     def refresh(self) -> None:
         for child in self.pending_list_box.get_children():
             self.pending_list_box.remove(child)
+        for child in self.scheduled_list_box.get_children():
+            self.scheduled_list_box.remove(child)
         for child in self.done_list_box.get_children():
             self.done_list_box.remove(child)
 
         notes = load_notes()
+        if scheduled_activate(notes):
+            save_notes(notes)
         for note in pending(notes):
             self.pending_list_box.add(self._make_pending_row(note))
+        for note in scheduled(notes):
+            self.scheduled_list_box.add(self._make_scheduled_row(note))
         for note in completed(notes):
             self.done_list_box.add(self._make_done_row(note))
 
         self.pending_list_box.show_all()
+        self.scheduled_list_box.show_all()
         self.done_list_box.show_all()
 
 
@@ -1355,7 +1487,7 @@ class HotNoteIndicator:
             return True
 
         notes = load_notes()
-        if recur_resurrect(notes):
+        if scheduled_activate(notes):
             save_notes(notes)
             mtime = os.path.getmtime(HOTNOTES_PATH)
 

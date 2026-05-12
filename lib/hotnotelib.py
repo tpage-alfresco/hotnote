@@ -99,7 +99,9 @@ def sort_key(note: dict) -> tuple:
 
 
 def pending(notes: list) -> list:
-    return sorted([t for t in notes if t.get("status") != "done"], key=sort_key)
+    return sorted(
+        [t for t in notes if t.get("status", "pending") == "pending"], key=sort_key
+    )
 
 
 def completed(notes: list) -> list:
@@ -186,23 +188,6 @@ def advance_next_due(prev_due: str, recur: dict) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def recur_resurrect(notes: list) -> bool:
-    """Flip done recurring notes back to pending if next_due has passed."""
-    now = datetime.now(timezone.utc)
-    changed = False
-    for note in notes:
-        if note.get("status") != "done":
-            continue
-        if not note.get("recur") or not note.get("next_due"):
-            continue
-        due = datetime.fromisoformat(note["next_due"].replace("Z", "+00:00"))
-        if due <= now:
-            note["status"] = "pending"
-            note["completed"] = None
-            changed = True
-    return changed
-
-
 def fmt_recur_short(note: dict) -> str:
     """Short recurrence label, e.g. '↻18d'."""
     recur = note.get("recur")
@@ -212,3 +197,57 @@ def fmt_recur_short(note: dict) -> str:
     unit = recur["unit"]
     short = {"days": "d", "weeks": "w", "months": "mo"}[unit]
     return f"↻{every}{short}"
+
+
+# ── Scheduled notes ──────────────────────────────────────────────────────────
+
+
+def scheduled(notes: list) -> list:
+    """Return notes with status 'scheduled', sorted by appear_date ascending."""
+    return sorted(
+        [t for t in notes if t.get("status") == "scheduled"],
+        key=lambda t: t.get("appear_date", ""),
+    )
+
+
+def scheduled_activate(notes: list) -> bool:
+    """Flip scheduled notes to pending if their appear_date has arrived."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    changed = False
+    for note in notes:
+        if note.get("status") != "scheduled":
+            continue
+        appear = note.get("appear_date")
+        if not appear:
+            continue
+        if appear <= today:
+            note["status"] = "pending"
+            note["appear_date"] = None
+            note["completed"] = None
+            changed = True
+    return changed
+
+
+def parse_appear_date(spec: str) -> str | None:
+    """Validate a YYYY-MM-DD date string. Returns None if invalid or in the past."""
+    spec = spec.strip()
+    try:
+        dt = datetime.strptime(spec, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+    today = datetime.now(timezone.utc).date()
+    if dt < today:
+        return None
+    return spec
+
+
+def fmt_appear_short(note: dict) -> str:
+    """Short appear-date label, e.g. 'Jun 1'."""
+    appear = note.get("appear_date")
+    if not appear:
+        return ""
+    try:
+        dt = datetime.strptime(appear, "%Y-%m-%d")
+        return dt.strftime("%b %-d")
+    except ValueError:
+        return appear

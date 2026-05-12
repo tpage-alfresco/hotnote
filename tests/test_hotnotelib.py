@@ -2,6 +2,8 @@
 
 import sys
 import os
+from unittest.mock import patch
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 
@@ -88,6 +90,15 @@ class TestPendingAndCompleted:
         assert len(result) == 1
         assert result[0]["id"] == "1"
 
+    def test_pending_excludes_scheduled(self):
+        notes = [
+            _note(id="1"),
+            _note(id="2", status="scheduled", appear_date="2099-01-01"),
+        ]
+        result = hn.pending(notes)
+        assert len(result) == 1
+        assert result[0]["id"] == "1"
+
     def test_completed_only_done(self):
         notes = [_note(id="1"), _note(id="2", status="done", completed="2025-01-01")]
         result = hn.completed(notes)
@@ -155,3 +166,123 @@ class TestAdvanceNextDue:
             "2025-01-31T00:00:00Z", {"every": 1, "unit": "months"}
         )
         assert result == "2025-02-28T00:00:00Z"
+
+
+# ── scheduled ────────────────────────────────────────────────────────────────
+
+
+class TestScheduled:
+    def test_returns_only_scheduled(self):
+        notes = [
+            _note(id="1", status="pending"),
+            _note(id="2", status="scheduled", appear_date="2026-06-01"),
+            _note(id="3", status="done"),
+        ]
+        result = hn.scheduled(notes)
+        assert len(result) == 1
+        assert result[0]["id"] == "2"
+
+    def test_sorted_by_appear_date(self):
+        notes = [
+            _note(id="later", status="scheduled", appear_date="2026-09-01"),
+            _note(id="sooner", status="scheduled", appear_date="2026-06-01"),
+        ]
+        result = hn.scheduled(notes)
+        assert result[0]["id"] == "sooner"
+        assert result[1]["id"] == "later"
+
+    def test_empty_when_none_scheduled(self):
+        notes = [_note(id="1", status="pending")]
+        assert hn.scheduled(notes) == []
+
+
+# ── scheduled_activate ───────────────────────────────────────────────────────
+
+
+class TestScheduledActivate:
+    def test_activates_past_date(self):
+        notes = [_note(id="1", status="scheduled", appear_date="2020-01-01")]
+        assert hn.scheduled_activate(notes) is True
+        assert notes[0]["status"] == "pending"
+        assert notes[0]["appear_date"] is None
+
+    def test_leaves_future_date(self):
+        notes = [_note(id="1", status="scheduled", appear_date="2099-12-31")]
+        assert hn.scheduled_activate(notes) is False
+        assert notes[0]["status"] == "scheduled"
+
+    def test_activates_today(self):
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        notes = [_note(id="1", status="scheduled", appear_date=today)]
+        assert hn.scheduled_activate(notes) is True
+        assert notes[0]["status"] == "pending"
+
+    def test_ignores_non_scheduled(self):
+        notes = [_note(id="1", status="pending")]
+        assert hn.scheduled_activate(notes) is False
+
+    def test_clears_completed_on_activate(self):
+        notes = [
+            _note(
+                id="1",
+                status="scheduled",
+                appear_date="2020-01-01",
+                completed="2020-01-01T00:00:00Z",
+            )
+        ]
+        hn.scheduled_activate(notes)
+        assert notes[0]["completed"] is None
+
+    def test_recurring_note_activates(self):
+        notes = [
+            _note(
+                id="1",
+                status="scheduled",
+                appear_date="2020-06-01",
+                recur={"every": 1, "unit": "months"},
+                next_due="2020-06-01T00:00:00Z",
+            )
+        ]
+        hn.scheduled_activate(notes)
+        assert notes[0]["status"] == "pending"
+
+
+# ── parse_appear_date ────────────────────────────────────────────────────────
+
+
+class TestParseAppearDate:
+    def test_valid_future_date(self):
+        assert hn.parse_appear_date("2099-06-01") == "2099-06-01"
+
+    def test_today_is_valid(self):
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        assert hn.parse_appear_date(today) == today
+
+    def test_past_date_rejected(self):
+        assert hn.parse_appear_date("2000-01-01") is None
+
+    def test_invalid_format(self):
+        assert hn.parse_appear_date("not-a-date") is None
+
+    def test_whitespace_stripped(self):
+        assert hn.parse_appear_date("  2099-06-01  ") == "2099-06-01"
+
+    def test_empty_string(self):
+        assert hn.parse_appear_date("") is None
+
+
+# ── fmt_appear_short ─────────────────────────────────────────────────────────
+
+
+class TestFmtAppearShort:
+    def test_formats_date(self):
+        note = _note(appear_date="2026-06-01")
+        result = hn.fmt_appear_short(note)
+        assert "Jun" in result
+        assert "1" in result
+
+    def test_no_appear_date(self):
+        assert hn.fmt_appear_short(_note()) == ""
+
+    def test_none_appear_date(self):
+        assert hn.fmt_appear_short(_note(appear_date=None)) == ""

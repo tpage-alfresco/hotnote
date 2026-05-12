@@ -20,13 +20,15 @@ from hotnotelib import (
     advance_next_due,
     fetch_page_title,
     find_note,
+    fmt_appear_short,
     fmt_recur_short,
     load_data,
     new_id,
     now_iso,
+    parse_appear_date,
     parse_recur,
-    recur_resurrect,
     save_data,
+    scheduled_activate,
     sort_key,
 )
 
@@ -37,12 +39,16 @@ def fmt_note(note: dict, show_links: bool = False) -> str:
     imp = note.get("importance", "medium")
     urg = note.get("urgency", "soon")
     status = note.get("status", "pending")
-    done_marker = "✓" if status == "done" else " "
+    status_markers = {"done": "✓", "scheduled": "⏳", "pending": " "}
+    marker = status_markers.get(status, " ")
     recur = fmt_recur_short(note)
     recur_str = f" {recur}" if recur else ""
     line = (
-        f"[{done_marker}] {note['id']}  {imp:<8} {urg:<9}  {note['summary']}{recur_str}"
+        f"[{marker}] {note['id']}  {imp:<8} {urg:<9}  {note['summary']}{recur_str}"
     )
+    appear = fmt_appear_short(note)
+    if appear:
+        line += f"  (appears {appear})"
     if note.get("completed"):
         line += f"  (done {note['completed'][:10]})"
     if show_links and note.get("links"):
@@ -68,15 +74,25 @@ def cmd_add(args) -> None:
         )
     data = load_data()
     uid = new_id(data["hotnotes"])
+    initial_status = "pending"
+    appear_date = None
+    if args.appear:
+        appear_date = parse_appear_date(args.appear)
+        if not appear_date:
+            sys.exit(
+                f"Invalid appear date '{args.appear}'. Use YYYY-MM-DD (today or later)."
+            )
+        initial_status = "scheduled"
     note = {
         "id": uid,
         "summary": args.summary,
         "details": "",
-        "status": "pending",
+        "status": initial_status,
         "importance": args.importance,
         "urgency": args.urgency,
         "created": now_iso(),
         "completed": None,
+        "appear_date": appear_date,
         "links": [],
     }
     if args.recur:
@@ -86,7 +102,7 @@ def cmd_add(args) -> None:
                 f"Invalid recurrence '{args.recur}'. Use e.g. 18d, 2w, 1m, or 'none'."
             )
         note["recur"] = recur
-        first = args.first_due or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        first = args.first_due or args.appear or datetime.now(timezone.utc).strftime("%Y-%m-%d")
         note["first_due"] = first
         note["next_due"] = f"{first}T00:00:00Z"
     data["hotnotes"].append(note)
@@ -96,16 +112,23 @@ def cmd_add(args) -> None:
 
 def cmd_list(args) -> None:
     data = load_data()
-    if recur_resurrect(data["hotnotes"]):
+    if scheduled_activate(data["hotnotes"]):
         save_data(data)
     notes = data["hotnotes"]
-    if not args.all:
-        notes = [t for t in notes if t.get("status") != "done"]
+    if args.scheduled:
+        notes = [t for t in notes if t.get("status") == "scheduled"]
+    elif not args.all:
+        notes = [t for t in notes if t.get("status", "pending") == "pending"]
     notes = sorted(notes, key=sort_key)
     if not notes:
-        print("No hotnotes." if args.all else "No pending hotnotes.")
+        if args.scheduled:
+            print("No scheduled hotnotes.")
+        elif args.all:
+            print("No hotnotes.")
+        else:
+            print("No pending hotnotes.")
         return
-    header = f"{'':3} {'ID':<6}  {'IMPORTANCE':<8} {'URGENCY':<9}  SUMMARY"
+    header = f"{'':4} {'ID':<6}  {'IMPORTANCE':<8} {'URGENCY':<9}  SUMMARY"
     print(header)
     print("-" * 72)
     for t in notes:
@@ -117,12 +140,14 @@ def cmd_done(args) -> None:
     note = find_note(data["hotnotes"], args.id)
     if not note:
         sys.exit(f"No hotnote with id '{args.id}'")
-    note["status"] = "done"
     note["completed"] = now_iso()
     if note.get("recur") and note.get("next_due"):
         note["next_due"] = advance_next_due(note["next_due"], note["recur"])
-        print(f"Marked done: {note['summary']} (next due {note['next_due'][:10]})")
+        note["status"] = "scheduled"
+        note["appear_date"] = note["next_due"][:10]
+        print(f"Marked done: {note['summary']} (scheduled for {note['appear_date']})")
     else:
+        note["status"] = "done"
         print(f"Marked done: {note['summary']}")
     save_data(data)
 
@@ -165,6 +190,20 @@ def cmd_set(args) -> None:
         note["summary"] = args.summary
     if args.details is not None:
         note["details"] = args.details
+    if args.appear:
+        if args.appear.lower() == "none":
+            note["appear_date"] = None
+            if note.get("status") == "scheduled":
+                note["status"] = "pending"
+        else:
+            appear_date = parse_appear_date(args.appear)
+            if not appear_date:
+                sys.exit(
+                    f"Invalid appear date '{args.appear}'. "
+                    "Use YYYY-MM-DD (today or later), or 'none' to remove."
+                )
+            note["appear_date"] = appear_date
+            note["status"] = "scheduled"
     if args.recur:
         recur = parse_recur(args.recur)
         if recur:
@@ -245,10 +284,16 @@ def main() -> None:
     p_add.add_argument(
         "-d", "--first-due", help="First due date (YYYY-MM-DD, defaults to today)"
     )
+    p_add.add_argument(
+        "-a", "--appear", help="Schedule to appear on YYYY-MM-DD (stays hidden until then)"
+    )
     p_add.set_defaults(func=cmd_add)
 
     p_list = sub.add_parser("list", help="List hotnotes")
-    p_list.add_argument("-a", "--all", action="store_true", help="Include completed")
+    p_list.add_argument("-a", "--all", action="store_true", help="Include all statuses")
+    p_list.add_argument(
+        "-s", "--scheduled", action="store_true", help="Show scheduled hotnotes"
+    )
     p_list.add_argument(
         "-l", "--links", action="store_true", help="Show linked references"
     )
@@ -276,6 +321,9 @@ def main() -> None:
         "-r", "--recur", help="Recurrence: e.g. 18d, 2w, 1m, or 'none' to remove"
     )
     p_set.add_argument("-d", "--first-due", help="First due date (YYYY-MM-DD)")
+    p_set.add_argument(
+        "-a", "--appear", help="Schedule to appear on YYYY-MM-DD, or 'none' to remove"
+    )
     p_set.set_defaults(func=cmd_set)
 
     p_link = sub.add_parser("link", help="Attach a link or text reference to a hotnote")
