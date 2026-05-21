@@ -20,13 +20,14 @@ from hotnotelib import (
     IMPORTANCE_WEIGHT,
     URGENCY_VALUES,
     URGENCY_WEIGHT,
-    advance_next_due,
     completed,
     fetch_page_title,
     fmt_appear_short,
     fmt_recur_short,
     load_config,
     load_notes,
+    mark_done,
+    mark_reopened,
     new_id,
     now_iso,
     parse_appear_date,
@@ -1330,13 +1331,7 @@ class HotNoteWindow(Gtk.Window):
         notes = load_notes()
         for t in notes:
             if t["id"] == note_id:
-                t["completed"] = now_iso()
-                if t.get("recur") and t.get("next_due"):
-                    t["next_due"] = advance_next_due(t["next_due"], t["recur"])
-                    t["status"] = "scheduled"
-                    t["appear_date"] = t["next_due"][:10]
-                else:
-                    t["status"] = "done"
+                mark_done(t)
         save_notes(notes)
         self.refresh()
 
@@ -1344,8 +1339,7 @@ class HotNoteWindow(Gtk.Window):
         notes = load_notes()
         for t in notes:
             if t["id"] == note_id:
-                t["status"] = "pending"
-                t["completed"] = None
+                mark_reopened(t)
         save_notes(notes)
         self.refresh()
 

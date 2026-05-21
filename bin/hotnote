@@ -17,12 +17,13 @@ from datetime import datetime, timezone
 from hotnotelib import (
     IMPORTANCE_VALUES,
     URGENCY_VALUES,
-    advance_next_due,
     fetch_page_title,
     find_note,
     fmt_appear_short,
     fmt_recur_short,
     load_data,
+    mark_done,
+    mark_reopened,
     new_id,
     now_iso,
     parse_appear_date,
@@ -140,14 +141,10 @@ def cmd_done(args) -> None:
     note = find_note(data["hotnotes"], args.id)
     if not note:
         sys.exit(f"No hotnote with id '{args.id}'")
-    note["completed"] = now_iso()
-    if note.get("recur") and note.get("next_due"):
-        note["next_due"] = advance_next_due(note["next_due"], note["recur"])
-        note["status"] = "scheduled"
-        note["appear_date"] = note["next_due"][:10]
+    mark_done(note)
+    if note["status"] == "scheduled":
         print(f"Marked done: {note['summary']} (scheduled for {note['appear_date']})")
     else:
-        note["status"] = "done"
         print(f"Marked done: {note['summary']}")
     save_data(data)
 
@@ -157,8 +154,7 @@ def cmd_reopen(args) -> None:
     note = find_note(data["hotnotes"], args.id)
     if not note:
         sys.exit(f"No hotnote with id '{args.id}'")
-    note["status"] = "pending"
-    note["completed"] = None
+    mark_reopened(note)
     save_data(data)
     print(f"Reopened: {note['summary']}")
 

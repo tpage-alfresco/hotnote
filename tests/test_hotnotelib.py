@@ -168,6 +168,128 @@ class TestAdvanceNextDue:
         assert result == "2025-02-28T00:00:00Z"
 
 
+class TestRecurringTaskCompletion:
+    """Reproduce the Polish Tax Credit bug: completing a monthly recurring task
+    should schedule the next occurrence relative to today, not blindly advance
+    from a potentially-drifted next_due.
+
+    Scenario: first_due = 2026-05-21, recur = 1m.  The user created the note
+    on May 7 and immediately did 'done', which advanced next_due to June 21.
+    Through repeated 'done' calls (e.g. from the scheduled tab in the GTK app)
+    next_due drifted to Aug 21.  When the user completes the task for real on
+    May 21, the next occurrence should be June 21 — not September 21.
+    """
+
+    MONTHLY = {"every": 1, "unit": "months"}
+
+    def test_current_behaviour_advances_from_drifted_next_due(self):
+        """Shows the bug: advance_next_due just adds an interval to the stored
+        next_due regardless of today's date, so a drifted value keeps drifting."""
+        result = hn.advance_next_due("2026-08-21T00:00:00Z", self.MONTHLY)
+        assert result == "2026-09-21T00:00:00Z"
+
+    def test_completing_on_due_date_should_give_next_month(self):
+        """When the task is due today and completed today, next should be +1 interval."""
+        next_due = hn.advance_next_due_from(
+            next_due="2026-05-21T00:00:00Z",
+            recur=self.MONTHLY,
+            first_due="2026-05-21",
+            now="2026-05-21T12:00:00Z",
+        )
+        assert next_due == "2026-06-21T00:00:00Z"
+
+    def test_drifted_next_due_resets_to_cadence(self):
+        """The Polish Tax Credit bug: next_due drifted to Aug but today is May,
+        so completing should give June 21 (first cadence date after today)."""
+        next_due = hn.advance_next_due_from(
+            next_due="2026-08-21T00:00:00Z",
+            recur=self.MONTHLY,
+            first_due="2026-05-21",
+            now="2026-05-21T12:00:00Z",
+        )
+        assert next_due == "2026-06-21T00:00:00Z"
+
+    def test_overdue_task_skips_to_first_future_cadence_date(self):
+        """If the task is overdue by several months, skip to the first future date."""
+        next_due = hn.advance_next_due_from(
+            next_due="2026-01-15T00:00:00Z",
+            recur=self.MONTHLY,
+            first_due="2026-01-15",
+            now="2026-05-21T12:00:00Z",
+        )
+        assert next_due == "2026-06-15T00:00:00Z"
+
+    def test_overdue_weekly_task(self):
+        """Bi-weekly task overdue should jump to the next future cadence date.
+        Apr 14 → Apr 28 → May 12 → May 26 (first date after May 21)."""
+        next_due = hn.advance_next_due_from(
+            next_due="2026-04-28T00:00:00Z",
+            recur={"every": 2, "unit": "weeks"},
+            first_due="2026-04-14",
+            now="2026-05-21T12:00:00Z",
+        )
+        assert next_due == "2026-05-26T00:00:00Z"
+
+    def test_early_completion_preserves_cadence(self):
+        """Completing 3 days before the due date returns the current cadence
+        date (June 21), preserving the monthly-on-the-21st rhythm."""
+        next_due = hn.advance_next_due_from(
+            next_due="2026-06-21T00:00:00Z",
+            recur=self.MONTHLY,
+            first_due="2026-05-21",
+            now="2026-06-18T12:00:00Z",
+        )
+        assert next_due == "2026-06-21T00:00:00Z"
+
+
+# ── mark_done / mark_reopened ─────────────────────────────────────────────────
+
+
+class TestMarkDone:
+    def test_non_recurring_becomes_done(self):
+        note = _note(id="1", status="pending")
+        hn.mark_done(note)
+        assert note["status"] == "done"
+        assert note["completed"] is not None
+
+    def test_recurring_becomes_scheduled(self):
+        note = _note(
+            id="1",
+            status="pending",
+            recur={"every": 1, "unit": "months"},
+            first_due="2020-01-15",
+            next_due="2020-01-15T00:00:00Z",
+        )
+        hn.mark_done(note)
+        assert note["status"] == "scheduled"
+        assert note["appear_date"] == note["next_due"][:10]
+        assert note["completed"] is not None
+
+    def test_recurring_without_first_due_becomes_done(self):
+        note = _note(
+            id="1",
+            status="pending",
+            recur={"every": 5, "unit": "days"},
+            next_due="2026-06-01T00:00:00Z",
+        )
+        hn.mark_done(note)
+        assert note["status"] == "done"
+
+
+class TestMarkReopened:
+    def test_reopens_done_note(self):
+        note = _note(id="1", status="done", completed="2026-05-01T00:00:00Z")
+        hn.mark_reopened(note)
+        assert note["status"] == "pending"
+        assert note["completed"] is None
+
+    def test_reopens_scheduled_note(self):
+        note = _note(id="1", status="scheduled", completed="2026-05-01T00:00:00Z")
+        hn.mark_reopened(note)
+        assert note["status"] == "pending"
+        assert note["completed"] is None
+
+
 # ── scheduled ────────────────────────────────────────────────────────────────
 
 

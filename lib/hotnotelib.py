@@ -92,6 +92,31 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def mark_done(note: dict) -> None:
+    """Mark a note as done, advancing recurrence if applicable.
+
+    Mutates the note dict in place.  Returns nothing — callers can inspect
+    note["status"] afterwards to decide what to print/display.
+    """
+    note["completed"] = now_iso()
+    if note.get("recur") and note.get("first_due"):
+        note["next_due"] = advance_next_due_from(
+            next_due=note.get("next_due", ""),
+            recur=note["recur"],
+            first_due=note["first_due"],
+        )
+        note["status"] = "scheduled"
+        note["appear_date"] = note["next_due"][:10]
+    else:
+        note["status"] = "done"
+
+
+def mark_reopened(note: dict) -> None:
+    """Reopen a completed or scheduled note.  Mutates in place."""
+    note["status"] = "pending"
+    note["completed"] = None
+
+
 def sort_key(note: dict) -> tuple:
     imp = IMPORTANCE_WEIGHT.get(note.get("importance", "medium"), 99)
     urg = URGENCY_WEIGHT.get(note.get("urgency", "soon"), 99)
@@ -185,6 +210,44 @@ def advance_next_due(prev_due: str, recur: dict) -> str:
         dt += timedelta(weeks=every)
     elif unit == "months":
         dt += relativedelta(months=every)
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _recur_delta(recur: dict):
+    """Return a timedelta or relativedelta for one recurrence interval."""
+    from dateutil.relativedelta import relativedelta
+
+    unit = recur["unit"]
+    every = recur["every"]
+    if unit == "days":
+        return timedelta(days=every)
+    elif unit == "weeks":
+        return timedelta(weeks=every)
+    elif unit == "months":
+        return relativedelta(months=every)
+    raise ValueError(f"Unknown recurrence unit: {unit}")
+
+
+def advance_next_due_from(
+    next_due: str, recur: dict, first_due: str, now: str | None = None
+) -> str:
+    """Compute the next due date anchored to the first_due cadence.
+
+    Walks forward from first_due by the recurrence interval until reaching
+    the first cadence date strictly after *now*.  This prevents drift when
+    next_due has been advanced too many times (e.g. by repeated 'done' calls
+    on a scheduled note).
+    """
+    if now is None:
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    now_dt = datetime.fromisoformat(now.replace("Z", "+00:00"))
+    dt = datetime.fromisoformat(f"{first_due}T00:00:00+00:00")
+    delta = _recur_delta(recur)
+
+    while dt <= now_dt:
+        dt += delta
+
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
